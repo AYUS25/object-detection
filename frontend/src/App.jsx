@@ -81,7 +81,7 @@ export default function App() {
         )}
         
         {activeTab === 'Memory Search' && (
-          <MemorySearch sessionId={data?.status?.session_id || ''} />
+          <MemorySearch />
         )}
         
         {activeTab === 'Timeline' && (

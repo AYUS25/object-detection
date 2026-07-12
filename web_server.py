@@ -180,15 +180,53 @@ async def search_memory(query: str = Query(None), brand: str = None, category: s
     
     session_id = _vision._session_id
     results = search_engine.search(session_id, filters)
-    return JSONResponse({"results": results})
+    return JSONResponse({"results": results, "session_id": session_id, "filters_applied": filters})
 
 
 @app.get("/timeline")
-async def get_timeline() -> JSONResponse:
+async def get_timeline(limit: int = Query(200)) -> JSONResponse:
     """Fetch chronological event timeline for the session."""
     session_id = _vision._session_id
-    timeline = timeline_engine.get_session_timeline(session_id)
-    return JSONResponse({"timeline": timeline})
+    timeline = timeline_engine.get_session_timeline(session_id, limit=limit)
+    return JSONResponse({"timeline": timeline, "session_id": session_id, "count": len(timeline)})
+
+
+@app.get("/api/db-stats")
+async def get_db_stats() -> JSONResponse:
+    """Verify DB is storing reports — returns counts of all tables for the current session."""
+    import sqlite3
+    from pathlib import Path
+    db_path = Path("data/smart_vision.db")
+    if not db_path.exists():
+        return JSONResponse({"error": "Database file not found", "path": str(db_path.resolve())})
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        session_id = _vision._session_id if _vision else None
+        stats = {"db_path": str(db_path.resolve()), "session_id": session_id}
+        tables = ["sessions", "reports", "report_objects", "object_events", "tracked_objects", "ocr_events"]
+        for t in tables:
+            try:
+                if session_id:
+                    row = conn.execute(f"SELECT COUNT(*) as c FROM {t} WHERE session_id=?", (session_id,)).fetchone()
+                else:
+                    row = conn.execute(f"SELECT COUNT(*) as c FROM {t}").fetchone()
+                stats[t] = row["c"] if row else 0
+            except Exception:
+                stats[t] = "n/a"
+        # Also get all-time totals
+        totals = {}
+        for t in tables:
+            try:
+                row = conn.execute(f"SELECT COUNT(*) as c FROM {t}").fetchone()
+                totals[t] = row["c"] if row else 0
+            except Exception:
+                totals[t] = "n/a"
+        stats["all_sessions_totals"] = totals
+        conn.close()
+        return JSONResponse(stats)
+    except Exception as e:
+        return JSONResponse({"error": str(e)})
 
 
 @app.get("/graph")

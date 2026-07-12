@@ -1,4 +1,4 @@
-# Smart Vision Assistant: Comprehensive Study Guide (Web UI & Session Memory Edition)
+# Smart Vision Assistant: Comprehensive Study Guide (Full Architecture Edition)
 
 Welcome to the ultimate learning guide for the **Smart Vision Assistant**. This document acts as your comprehensive computer vision, software architecture, and real-time systems teacher. We will walk through the system step-by-step, explaining the technology stack, the multi-threaded data flow, the database schema, and the persistent session memory engine.
 
@@ -113,7 +113,7 @@ Structured data is sent directly over WebSockets in a JSON payload to let the Re
 
 ## 4. File-by-File Masterclass
 
-Let's dissect the core files of the web UI and session memory update:
+Let's dissect the core files that make up the complete backend pipeline, intelligent engines, and web UI:
 
 ### File 1: `entity_registry.py` — Stable Identity Engine
 *   **Purpose:** Maintains stable UUID-based identities (`Entity`) for all detected objects. Adopts objects into session memory via a >= 80% confidence threshold, manages their ACTIVE/INACTIVE transitions, and constructs structured reports.
@@ -162,6 +162,24 @@ Let's dissect the core files of the web UI and session memory update:
 
 ### File 6: `frontend/src/components/SceneReport.jsx` — Report Renderer
 *   **Purpose:** Renders the natural language scene summary, lists cumulative relationship statistics, and shows detailed expansion cards containing the full event timelines and Gemini analysis for active and inactive entities.
+
+### File 7: `database_manager.py` — SQLite Persistence Layer
+*   **Purpose:** Asynchronous producer/consumer database manager with a dedicated background writer thread. It logs sessions, reports, active objects, and lifecycle events to `smart_vision.db` without blocking the main vision loop.
+
+### File 8: `ocr_engine.py` & `product_knowledge.py` — Text & Brand Recognition
+*   **Purpose:** `ocr_engine.py` runs local text extraction (PaddleOCR/EasyOCR) on cropped object images. `product_knowledge.py` acts as a local Knowledge Base mapping extracted text (e.g., "bisleri") to product types ("Water Bottle").
+
+### File 9: `spatial_engine.py` & `relationship_engine.py` — Geometric Intelligence
+*   **Purpose:** Evaluates geometric relationships (e.g., `near`, `inside`, `on_top_of`) using pure math on bounding boxes, eliminating the CPU overhead of ML-based scene graph generation.
+
+### File 10: `event_engine.py` — Behavioral Rules Engine
+*   **Purpose:** Monitors object state over time to emit high-level behavioral events, determining when an object becomes `Stationary`, is `Moved`, or is `Abandoned`.
+
+### File 11: `search_engine.py` & `query_interpreter.py` — Visual Memory Search
+*   **Purpose:** Allows querying historical visual memory. The interpreter translates natural language queries into structured SQLite filters using NLP heuristics (no LLM required).
+
+### File 12: `report_engine.py` & `timeline_engine.py` — Analytics & Histories
+*   **Purpose:** `report_engine.py` formats structured scene reports for console logging, while `timeline_engine.py` reconstructs chronological event histories and object lifecycles from the database.
 
 ---
 

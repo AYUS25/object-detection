@@ -11,7 +11,7 @@ from typing import List, Dict, Any
 log = logging.getLogger("timeline_engine")
 
 class TimelineEngine:
-    def __init__(self, db_path: str = "smart_vision.db"):
+    def __init__(self, db_path: str = "data/smart_vision.db"):
         self.db_path = db_path
 
     def get_session_timeline(self, session_id: int, limit: int = 100) -> List[Dict[str, Any]]:

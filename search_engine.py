@@ -12,7 +12,7 @@ from typing import List, Dict, Any
 log = logging.getLogger("search_engine")
 
 class SearchEngine:
-    def __init__(self, db_path: str = "smart_vision.db"):
+    def __init__(self, db_path: str = "data/smart_vision.db"):
         self.db_path = db_path
 
     def search(self, session_id: int, filters: dict) -> List[Dict[str, Any]]:

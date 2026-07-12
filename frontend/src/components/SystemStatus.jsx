@@ -9,7 +9,10 @@
  *  - FPS health bar
  */
 
-import React, { memo } from 'react'
+import React, { memo, useState, useEffect } from 'react'
+
+const API_BASE = 'http://localhost:8000'
+
 
 // ── Status row ────────────────────────────────────────────────────────────────
 const StatusRow = memo(({ label, value, state }) => {
@@ -67,6 +70,20 @@ const SystemStatus = memo(({ status, report }) => {
   const fps = report?.fps ?? status?.fps ?? 0
   const cpu = report?.cpu ?? status?.cpu ?? 0
   const ramMb = report?.ram_mb ?? status?.ram_mb ?? 0
+
+  const [dbStats, setDbStats] = useState(null)
+
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/db-stats`)
+        if (res.ok) setDbStats(await res.json())
+      } catch (_) {}
+    }
+    fetchStats()
+    const interval = setInterval(fetchStats, 10000)
+    return () => clearInterval(interval)
+  }, [])
 
   // FPS colour
   const fpsColour = fps >= 20 ? 'text-success' : fps >= 10 ? 'text-warning' : 'text-danger'
@@ -151,6 +168,24 @@ const SystemStatus = memo(({ status, report }) => {
             </div>
           </div>
         </div>
+
+        {/* DB Record counts */}
+        {dbStats && (
+          <div className="mt-4">
+            <div className="section-title mb-3 text-[10px] uppercase tracking-widest text-text-muted">Database Records (This Session)</div>
+            <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+              {['tracked_objects','object_events','reports','report_objects','sessions','ocr_events'].map(t => (
+                <div key={t} className="card text-center py-3">
+                  <div className="text-xl font-bold font-mono text-accent">{dbStats[t] ?? '—'}</div>
+                  <div className="text-[9px] uppercase tracking-wide text-text-muted mt-1">{t.replace(/_/g,' ')}</div>
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] text-text-muted mt-2">
+              DB: <span className="text-text-secondary">{dbStats.db_path ?? '—'}</span>
+            </p>
+          </div>
+        )}
       </div>
     </section>
   )

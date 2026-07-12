@@ -11,7 +11,7 @@ from typing import Dict, Any
 log = logging.getLogger("knowledge_graph")
 
 class KnowledgeGraph:
-    def __init__(self, db_path: str = "smart_vision.db"):
+    def __init__(self, db_path: str = "data/smart_vision.db"):
         self.db_path = db_path
 
     def get_graph(self, session_id: int) -> Dict[str, Any]:
