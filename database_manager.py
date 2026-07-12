@@ -47,6 +47,7 @@ _OP_OBJECT_REMOVED   = "object_removed"
 _OP_OBJECT_VERIFIED  = "object_verified"
 _OP_OBJECT_DESCRIBED = "object_described"
 _OP_CUSTOM_EVENT     = "custom_event"
+_OP_OCR_RESULT       = "ocr_result"
 _OP_STOP             = "stop"
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -174,6 +175,25 @@ CREATE INDEX IF NOT EXISTS idx_tracked_session_track   ON tracked_objects(sessio
 CREATE INDEX IF NOT EXISTS idx_tracked_label           ON tracked_objects(display_label);
 CREATE INDEX IF NOT EXISTS idx_tracked_category        ON tracked_objects(category);
 CREATE INDEX IF NOT EXISTS idx_tracked_status          ON tracked_objects(status);
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- ocr_events — OCR specific event log for future search functionality
+-- ────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS ocr_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    entity_id   TEXT    NOT NULL,
+    track_id    INTEGER NOT NULL,
+    event_at    TEXT    NOT NULL,
+    raw_texts   TEXT    NOT NULL,    -- JSON string array
+    best_text   TEXT    NOT NULL,
+    brand       TEXT    DEFAULT '',
+    inferred_label TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_ocr_entity   ON ocr_events(entity_id);
+CREATE INDEX IF NOT EXISTS idx_ocr_brand    ON ocr_events(brand);
+CREATE INDEX IF NOT EXISTS idx_ocr_session  ON ocr_events(session_id);
+
 """
 
 
@@ -259,34 +279,34 @@ class DatabaseManager:
         if op == _OP_INIT:
             conn.executescript(_SCHEMA)
             try:
-                # Migration to remove CHECK constraint on event_type if it exists
-                conn.executescript("""
-                PRAGMA foreign_keys=off;
-                BEGIN TRANSACTION;
-                CREATE TABLE IF NOT EXISTS _object_events_new (
-                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id       INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                    event_at         TEXT    NOT NULL,
-                    event_type       TEXT    NOT NULL,
-                    track_id         INTEGER NOT NULL,
-                    label            TEXT    NOT NULL,
-                    category         TEXT    NOT NULL,
-                    confidence       REAL,
-                    duration_seconds REAL,
-                    extra_data       TEXT
-                );
-                INSERT OR IGNORE INTO _object_events_new SELECT * FROM object_events;
-                DROP TABLE object_events;
-                ALTER TABLE _object_events_new RENAME TO object_events;
-                
-                CREATE INDEX IF NOT EXISTS idx_events_session          ON object_events(session_id);
-                CREATE INDEX IF NOT EXISTS idx_events_type             ON object_events(event_type);
-                CREATE INDEX IF NOT EXISTS idx_events_track            ON object_events(track_id);
-                CREATE INDEX IF NOT EXISTS idx_events_label            ON object_events(label);
-                CREATE INDEX IF NOT EXISTS idx_events_at               ON object_events(event_at);
-                COMMIT;
-                PRAGMA foreign_keys=on;
-                """)
+                # Add OCR columns backward-compatibly (Phase 1)
+                alter_statements = [
+                    "ALTER TABLE tracked_objects ADD COLUMN brand TEXT DEFAULT ''",
+                    "ALTER TABLE tracked_objects ADD COLUMN product_type TEXT DEFAULT ''",
+                    "ALTER TABLE tracked_objects ADD COLUMN detected_texts TEXT DEFAULT '[]'",
+                    "ALTER TABLE tracked_objects ADD COLUMN best_text TEXT DEFAULT ''",
+                    "ALTER TABLE tracked_objects ADD COLUMN inferred_display_label TEXT DEFAULT ''",
+                    "ALTER TABLE report_objects ADD COLUMN brand TEXT DEFAULT ''",
+                    "ALTER TABLE report_objects ADD COLUMN product_type TEXT DEFAULT ''",
+                    "ALTER TABLE report_objects ADD COLUMN best_text TEXT DEFAULT ''",
+                    "ALTER TABLE report_objects ADD COLUMN inferred_display_label TEXT DEFAULT ''"
+                ]
+                for stmt in alter_statements:
+                    try:
+                        conn.execute(stmt)
+                    except sqlite3.OperationalError:
+                        pass # already exists
+
+                # Phase 2: Search Indexes for OCR columns and timestamps
+                search_indexes = [
+                    "CREATE INDEX IF NOT EXISTS idx_tracked_brand ON tracked_objects(brand)",
+                    "CREATE INDEX IF NOT EXISTS idx_tracked_product ON tracked_objects(product_type)",
+                    "CREATE INDEX IF NOT EXISTS idx_tracked_first_seen ON tracked_objects(first_seen)",
+                    "CREATE INDEX IF NOT EXISTS idx_tracked_last_seen ON tracked_objects(last_seen)"
+                ]
+                for idx in search_indexes:
+                    conn.execute(idx)
+
             except Exception as e:
                 log.warning("[DB] Migration warning: %s", e)
             return None
@@ -462,6 +482,31 @@ class DatabaseManager:
                    (session_id, event_at, event_type, track_id, label, category, confidence, extra_data)
                    VALUES (?,?,?,?,?,?,?,?)""",
                 (session_id, now, event_type, track_id, label, category, confidence, extra),
+            )
+            return None
+
+        if op == _OP_OCR_RESULT:
+            (session_id, entity_id, track_id, raw_texts, best_text, brand, inferred_label) = args
+            now = _iso_now()
+            raw_texts_json = json.dumps(raw_texts)
+            
+            # 1. Update tracked_objects with OCR data
+            conn.execute(
+                """UPDATE tracked_objects
+                      SET brand = ?,
+                          best_text = ?,
+                          detected_texts = ?,
+                          inferred_display_label = ?
+                    WHERE session_id=? AND track_id=?""",
+                (brand, best_text, raw_texts_json, inferred_label, session_id, track_id),
+            )
+            
+            # 2. Add to ocr_events log
+            conn.execute(
+                """INSERT INTO ocr_events
+                   (session_id, entity_id, track_id, event_at, raw_texts, best_text, brand, inferred_label)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (session_id, entity_id, track_id, now, raw_texts_json, best_text, brand, inferred_label),
             )
             return None
 
@@ -646,6 +691,16 @@ class DatabaseManager:
         self._submit_async(
             _OP_CUSTOM_EVENT,
             (session_id, track_id, event_type, label, category, confidence, detail),
+        )
+
+    def on_ocr_result(
+        self, session_id: int, entity_id: str, track_id: int, 
+        raw_texts: List[str], best_text: str, brand: str, inferred_label: str
+    ) -> None:
+        """Called when async OCR thread completes processing a crop."""
+        self._submit_async(
+            _OP_OCR_RESULT,
+            (session_id, entity_id, track_id, raw_texts, best_text, brand, inferred_label)
         )
 
     def end_session(

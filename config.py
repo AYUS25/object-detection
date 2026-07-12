@@ -61,6 +61,17 @@ DEEP_ANALYSIS_ENABLED: bool = True           # Request rich Gemini descriptions 
 DEBUG_BYPASS_FPS_GATING: bool = True        # Ignore FPS limits for Gemini queueing
 
 # ──────────────────────────────────────────────────────────────────────────────
+# OCR & PRODUCT INTELLIGENCE
+# ──────────────────────────────────────────────────────────────────────────────
+OCR_PRIMARY_ENGINE: str = "paddleocr"        # 'paddleocr' or 'easyocr'
+OCR_MIN_CONFIDENCE: float = 0.75             # Ignore text regions below this confidence
+OCR_MIN_BBOX_SIZE: int = 40                  # Min width/height of crop to run OCR
+OCR_ENTITY_COOLDOWN: float = 5.0             # Seconds between OCR attempts per entity
+OCR_MAX_QUEUE_SIZE: int = 5                  # Drop crops if OCR thread falls behind
+OCR_MAX_WORKERS: int = 1                     # Number of async OCR threads
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # DISPLAY / HUD  (cv2.imshow window — kept for visual debugging)
 # ──────────────────────────────────────────────────────────────────────────────
 SHOW_OVERLAYS_DEFAULT: bool = True   # Start with bounding boxes on

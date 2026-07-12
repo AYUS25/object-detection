@@ -1,173 +1,211 @@
-# Smart Vision Assistant: Comprehensive Educator's Study Guide
+# Smart Vision Assistant: Comprehensive Study Guide (Web UI & Session Memory Edition)
 
-Welcome to the ultimate learning guide for the **Smart Vision Assistant**. Think of this document as your personal computer vision and software architecture teacher. We will walk through this project step-by-step, breaking down every file, every database schema detail, and every advanced concurrency design pattern. 
-
-By the end of this guide, you will understand not just *what* the code does, but *why* it was designed this way and *how* all the moving parts synchronize in real-time.
+Welcome to the ultimate learning guide for the **Smart Vision Assistant**. This document acts as your comprehensive computer vision, software architecture, and real-time systems teacher. We will walk through the system step-by-step, explaining the technology stack, the multi-threaded data flow, the database schema, and the persistent session memory engine.
 
 ---
 
-## 1. High-Level Blueprint: How Data Flows
+## 1. The Big Picture: System Architecture & Data Flow
 
-Before we look at the code, let's understand the life of a single camera frame and how it translates into long-term visual memory.
+To support smooth 15–30 FPS real-time computer vision while serving a modern web interface, the project is split into a **Headless AI Pipeline** running on a background thread and a **FastAPI Web Server** communicating with a **React Frontend**.
 
-### The Pipeline Architecture
+### 1.1 Architectural Blueprint
 ```mermaid
 graph TD
-    A[Webcam Feed] -->|Raw Frames| B(CameraThread)
-    B -->|Thread-Safe Lock| C(Main Loop: main.py)
-    C -->|Frame Skip check| D(ObjectDetector: detector.py)
+    A[Webcam Feed] -->|Raw Frames| B(_CameraThread)
+    B -->|Thread-Safe Lock| C(Vision Loop: smart_vision_headless.py)
+    C -->|Frame Skip Check| D(ObjectDetector: detector.py)
     D -->|YOLO + BoT-SORT Tracking| E(SceneMemory: scene_memory.py)
-    E -->|New Object / Age check| F{Gemini Call Needed?}
-    F -->|Yes| G(GeminiVerifier Queue)
-    F -->|No| H(DatabaseManager Queue)
-    G -->|Async API Response| I(GeminiVerifier Callbacks)
-    I -->|Async Log| H
-    E -->|Trigger Event| H
-    H -->|Background Consumer| J[(SQLite Database: smart_vision.db)]
+    
+    %% Session Memory Registry Link
+    E -->|Sync Every Frame| F(EntityRegistry: entity_registry.py)
+    
+    %% Verification & DB
+    F -->|New Object/Age Check| G{Gemini Call Needed?}
+    G -->|Yes| H(GeminiVerifier Queue)
+    G -->|No| I(DatabaseManager Queue)
+    H -->|Async API Response| J(GeminiVerifier Callbacks)
+    J -->|Async Log| I
+    I -->|Background Consumer| K[(SQLite Database: smart_vision.db)]
+    
+    %% Web Services
+    C -->|Encode Frame to JPEG| L(FastAPI Streamer: web_server.py)
+    F -->|Get Session State| M(FastAPI REST / WS Endpoints)
+    
+    %% Web Client
+    L -->|GET /video/stream MJPEG| N[React UI: CameraView]
+    M -->|WebSocket /ws/live 1s Push| O[React UI: App State]
 ```
 
-### The Three Concurrency Pillars
-To keep the webcam running smoothly at 15–30 FPS on a standard CPU, the system divides work across three independent execution lanes:
-1. **The Main Thread (Webcam, Detection & UI):** Grabs frames, runs YOLO, draws bounding boxes, and handles keyboard inputs.
-2. **The Database Thread (`DatabaseManager`):** Performs all disk writes and schema management.
-3. **The Gemini Thread (`GeminiVerifier`):** Executes network calls to refine labels and compile bullet-point summaries.
+### 1.2 Tech Stack
+
+*   **Backend (Python & C++ bindings):**
+    *   **FastAPI:** Web framework exposing REST APIs and WebSockets.
+    *   **OpenCV (cv2):** Camera capture, image resizing, annotated bounding box drawing, and high-performance JPEG encoding.
+    *   **Ultralytics YOLO11m:** Deep-learning-based object detector running locally on CPU.
+    *   **BoT-SORT:** Motion and appearance-based object tracker.
+    *   **SQLite (sqlite3):** Local relational database optimized in Write-Ahead Logging (WAL) mode.
+    *   **Google GenAI SDK (Gemini 2.0 Flash Lite):** Multimodal AI for semantic label verification and 3-bullet description generation.
+    *   **psutil:** System-level telemetry (CPU, RAM).
+*   **Frontend (HTML5, TailwindCSS, JavaScript/React):**
+    *   **React (Vite-scaffolded):** Interactive SPA (Single Page Application) frontend.
+    *   **TailwindCSS:** Modern styling using custom CSS utility tokens matching a high-fidelity dark theme.
+    *   **Native WebSocket:** Auto-reconnecting, event-driven communication channel.
 
 ---
 
-## 2. File-by-File Masterclass
+## 2. Core Features & Custom Enhancements
 
-Let's dissect each file in the codebase. We will explain its core purpose, key logic blocks, and educational takeaways.
+### 2.1 The Entity Registry Layer (Persistent Object Identity)
+Traditional tracking models rely on trackers (like BoT-SORT) that issue simple numeric IDs (e.g., `track_id: 3`). If an object is obscured or leaves the frame, the tracker loses it; when it returns, it is stamped with a brand-new ID.
+
+To solve this, the **Entity Registry** (`entity_registry.py`) introduces a stable, session-wide identity wrapper:
+1.  **Stable UUIDs:** Every newly detected object gets a permanent UUID (`entity_id`).
+2.  **Relinking Logic:** When an object disappears and returns, the registry performs semantic relinking. If a similar class (e.g., `Person`) disappears and reappears nearby within 30 seconds, the registry maps the new YOLO tracker ID back to the existing UUID.
+3.  **Accumulated History:** The registry stores a historical ring buffer of bounding boxes, events, relationships, and Gemini descriptions per entity.
+
+### 2.2 Session Memory (ACTIVE vs. INACTIVE States)
+By default, computer vision apps only display objects currently visible. When an object leaves the frame, it vanishes from the UI, resulting in a loss of historical context.
+
+The **Session Memory Engine** changes this behavior:
+*   **Confidence Gate:** Any object detected with **confidence >= 80%** and visible for **>= 2 seconds** is written to session memory.
+*   **ACTIVE State:** The object is currently visible in the camera view.
+*   **INACTIVE State:** The object has left the camera view. Instead of being deleted, it is marked as `INACTIVE`.
+*   **Last Seen Telemetry:** Inactive objects show `LAST SEEN Xm Ys AGO` in reports and cards, while preserving their last known bounding box, highest confidence score, accumulated active duration, events list, and relationships.
+*   **Append-Only & Lightweight:** Inactive objects are stored in memory and updated in the database. Crucially, they are never re-sent to Gemini or re-evaluated by the relationship engine, protecting CPU cycles.
 
 ---
 
-### File 1: `config.py` — The Control Room
-* **Purpose:** The single source of truth for global constants, camera specifications, detection thresholds, database configurations, and Gemini API rate limits.
-* **Key Components:**
-  * `CAMERA_INDEX`: Specifies which webcam to capture.
-  * `OBJECT_STALE_TIMEOUT`: The duration (seconds) an object can be missing from the camera's view before the system officially declares it "removed."
-  * `GEMINI_SESSION_BUDGET`: A protective budget cap limiting how many times the system can call the Gemini API during a single execution. This prevents runaway API costs.
-* **Teacher's Explanation:** 
-  > *"Think of `config.py` as the knobs and dials on a machine. Instead of hunting through thousands of lines of code to change how long the system remembers an object, you adjust one number here. It keeps the rest of the code clean, modular, and easy to maintain."*
+## 3. Data Flow & Communication Channels
 
----
+The system uses two dedicated channels to feed data to the web browser:
 
-### File 2: `main.py` — The Conductor
-* **Purpose:** The application entry point. It manages the webcam loop, controls timing, displays the graphical window, and coordinates the detector, database, and verifier.
-* **Key Components:**
-  * **`CameraThread`:** Captures raw images from the hardware in a background loop.
-    ```python
-    def read(self) -> tuple:
-        with self._lock:
-            if self._frame is None:
-                return False, None
-            return self._ret, self._frame.copy()
+### 3.1 Live Camera Feed (MJPEG Streaming)
+Sending 30 FPS video frames over WebSockets incurs high CPU overhead for encoding/decoding and bloats memory. Instead, the application uses **MJPEG (Motion JPEG)**:
+1.  In `smart_vision_headless.py`, the annotated camera frame is encoded to JPEG bytes using `cv2.imencode`.
+2.  `web_server.py` exposes `GET /video/stream`, which runs an async generator yielding multipart frames with content boundary blocks:
+    ```http
+    Content-Type: multipart/x-mixed-replace; boundary=frame
+
+    --frame
+    Content-Type: image/jpeg
+
+    [RAW JPEG BYTES]
+    --frame
+    Content-Type: image/jpeg
+    ...
     ```
-    *Why copy?* If we don't copy, the main thread and camera thread might try to read/write the same array memory at the same time, leading to corrupted, torn images.
-  * **Adaptive Frame Skipping:** Monitors execution duration. If YOLO inference slows down the loop, the engine selectively skips detector frames to ensure the display frame rate doesn't freeze.
-  * **Graceful Cleanup:** Catches interrupts (`Ctrl+C` or pressing `Q`) to guarantee background queues are drained and the database commits cleanly before exiting.
-* **Teacher's Explanation:**
-  > *"The main loop is like a heartbeat. On every beat (or tick), it reads a frame, detects objects, checks if it's time to print a report, renders the screen, and waits. If the computer gets slow, the heart keeps beating smoothly by skipping heavy detection computations on some frames."*
+3.  The React `<CameraView>` displays this feed using a standard HTML image tag:
+    ```html
+    <img src="http://localhost:8000/video/stream" />
+    ```
+    The browser decodes and displays this stream natively on its own render thread.
+
+### 3.2 Structured JSON Reports (WebSockets)
+Structured data is sent directly over WebSockets in a JSON payload to let the React client build high-fidelity cards and timelines. Every second, the FastAPI WebSocket `/ws/live` pushes:
+
+*   **objects:** Active, filtered objects (conf >= 80%, age >= 2s).
+*   **inactive_objects:** Inactive, historical objects observed since startup.
+*   **relationships:** Inter-object proximity status with count metrics.
+*   **status:** CPU, RAM, and Vision Pipeline FPS logs.
+*   **report:** Session-wide metrics and stability ratios.
 
 ---
 
-### File 3: `detector.py` — The Vision System
-* **Purpose:** Initializes the YOLO11 model, runs object detection, tracks objects across frames, and renders bounding boxes on the video feed.
-* **Key Components:**
-  * **YOLO11 Integration:** Loads model weights (`yolo11m.pt` or `yolo11n.pt`) and performs CPU-based inference.
-  * **BoT-SORT Tracker:** An algorithm that assigns a persistent ID (e.g., Track #3) to an object. It associates bounding boxes across frames so the system knows that "Object A" in Frame 1 is the exact same "Object A" in Frame 100.
-  * **Targeted Cropping:** When an object becomes stable, the detector extracts the bounding box region (`crop_image`) and converts it to a PIL image to pass to the Gemini verifier.
-* **Teacher's Explanation:**
-  > *"YOLO is incredibly fast at finding rectangles, but it is 'stateless'—it doesn't know that the cup it saw a millisecond ago is the same cup it sees now. The Tracker acts like a sticky label, stamping 'ID #5' on the cup. We use that ID to map long-term events in the database."*
+## 4. File-by-File Masterclass
+
+Let's dissect the core files of the web UI and session memory update:
+
+### File 1: `entity_registry.py` — Stable Identity Engine
+*   **Purpose:** Maintains stable UUID-based identities (`Entity`) for all detected objects. Adopts objects into session memory via a >= 80% confidence threshold, manages their ACTIVE/INACTIVE transitions, and constructs structured reports.
+*   **Key Logic Block:**
+    ```python
+    if rec.confidence >= 0.80:
+        eid = self._track_to_entity.get(tid)
+        if not eid:
+            # Relink check or register new
+            entity = self._find_relinkable(rec.display_label, rec.category)
+            if not entity:
+                entity = Entity(entity_id=str(uuid.uuid4()), ...)
+            self._session[entity.entity_id] = entity
+            self._track_to_entity[tid] = entity.entity_id
+    ```
+
+### File 2: `smart_vision_headless.py` — Vision Loop Wrapper
+*   **Purpose:** Orchestrates camera capture, YOLO detection, scene memory, event triggers, relationship mapping, and Gemini calls in a background thread. It runs without graphical UI windows (`cv2.imshow`) or keyboard blocking.
+*   **Key Logic Block:**
+    It updates the `EntityRegistry` and stores the resulting structured report along with raw JPEG frames inside a thread-locked shared memory cache:
+    ```python
+    with self._state_lock:
+        self._latest_jpeg = jpeg_bytes
+        self._cached_state = { ... }
+    ```
+
+### File 3: `web_server.py` — Web API & WebSocket Hub
+*   **Purpose:** The web gateway. It initializes `SmartVisionHeadless` inside FastAPI's startup context manager, exposes endpoints for system health, current objects, and the MJPEG stream, and manages WebSocket channels.
+*   **Key Logic Block:**
+    The WebSocket server pulls the thread-safe state cache every second and pushes it to active web clients:
+    ```python
+    @app.websocket("/ws/live")
+    async def websocket_live(ws: WebSocket):
+        await ws.accept()
+        while True:
+            state = _vision.get_state()
+            await ws.send_json(state)
+            await asyncio.sleep(1.0)
+    ```
+
+### File 4: `frontend/src/hooks/useWebSocket.js` — Client Connection
+*   **Purpose:** React hook that establishes a native WebSocket connection to `/ws/live` and handles connections with an exponential back-off reconnection timer.
+
+### File 5: `frontend/src/components/ObjectCards.jsx` — Visual Cards
+*   **Purpose:** Separates objects into two grid layouts: **Active Objects** (in-view, highlighted in color, green pulse indicator) and **Previously Observed** (out-of-view, dimmed, orange clock indicator displaying `last seen X ago`).
+
+### File 6: `frontend/src/components/SceneReport.jsx` — Report Renderer
+*   **Purpose:** Renders the natural language scene summary, lists cumulative relationship statistics, and shows detailed expansion cards containing the full event timelines and Gemini analysis for active and inactive entities.
 
 ---
 
-### File 4: `scene_memory.py` — The Short-Term Registry
-* **Purpose:** Keeps track of what is *currently* visible, maps raw COCO categories to human-friendly categories, and evaluates scene stability.
-* **Key Components:**
-  * **`ObjectRecord`:** A Python data class storing individual object properties (track ID, raw label, Gemini-refined label, duration in scene, and bounding box coordinates).
-  * **Category Mapping (`CATEGORY_MAP`):** Translates 80 standard YOLO classes into 10 structured categories (e.g., both "car" and "bus" become "Vehicles").
-  * **Stability Window:** Tracks how frequently the set of active IDs changes. If the same group of objects remains in view, stability rises toward 100%.
-* **Teacher's Explanation:**
-  > *"SceneMemory acts like your short-term memory. It remembers what objects are in front of you right now. If an object disappears behind a hand for a fraction of a second, the grace period prevents the system from immediately forgetting it."*
+## 5. Key Concurrency & Optimization Patterns
+
+### A. Non-Blocking IO (Vignette Isolation)
+Under heavy CPU load (YOLO run + camera decode), blocking operations can degrade the camera capture frame rate.
+*   **Headless Separation:** By dividing the FastAPI HTTP/WS routing process and the camera capture loop onto separate OS-level threads, network IO and browser rendering never interfere with frame rates.
+
+### B. Dual-Filtering Security
+To prevent low-confidence noise from polluting database history and the frontend UI, filtering is implemented on multiple layers:
+1.  **Registry admission:** `EntityRegistry` drops all tracks below 80% confidence.
+2.  **API transmission:** Endpoints strip any entities that do not meet the duration requirements (>= 2s).
+3.  **UI safeguards:** React memoized selectors (`useMemo`) filter arrays on the client side before rendering cards.
 
 ---
 
-### File 5: `database_manager.py` — The Long-Term Memory
-* **Purpose:** Manages the relational database (`data/smart_vision.db`), initializes table schemas, and serializes visual memory tasks.
-* **The 5-Table Schema Breakdown:**
-  * **`sessions`:** Tracks system uptime.
-  * **`reports`:** Tracks overall scene statistics at specific time intervals.
-  * **`report_objects`:** Links specific objects and coordinates to reports (answering *"Where was the cup in report #2?"*).
-  * **`object_events`:** A ledger logging exact lifecycle timestamps for `'new'`, `'removed'`, `'verified'`, and `'description_updated'` operations.
-  * **`tracked_objects`:** Stores consolidated stats per unique object (average confidence, accumulated duration, and latest descriptions).
-* **The Queue and Handshake Protocol:**
-  ```python
-  def _submit_sync(self, op: str, args: Any) -> Any:
-      evt = threading.Event()
-      result_box = [None, None]
-      self._write_queue.put((op, args, evt, result_box))
-      evt.wait()  # Wait here until background thread calls evt.set()
-      return result_box[0]
-  ```
-* **Teacher's Explanation:**
-  > *"SQLite is synchronous and can lock the application if written to from multiple threads. To solve this, `DatabaseManager` runs a single 'writer thread.' It is like a banker sitting in a secure office. The main loop slips deposit slips (write operations) under the door. If it needs a receipt (like a session ID), it waits for a handshake; otherwise, it walks away immediately."*
+## 6. How to Run the Web Application
+
+We use a batch script to automate environment setup, package installations, and server startups.
+
+1.  **Launch the System:**
+    Double-click the script in the project root:
+    ```
+    start_web.bat
+    ```
+    *   This script will verify your Python environment and run `pip install -r requirements.txt`.
+    *   It will run `npm install` inside the `frontend/` directory to configure Vite.
+    *   It opens two separate CMD windows: one starting FastAPI (`uvicorn web_server:app`) on port 8000, and one starting the Vite development server on port 5173.
+2.  **View the Dashboard:**
+    Open your browser and navigate to:
+    ```
+    http://localhost:5173
+    ```
 
 ---
 
-### File 6: `gemini_verifier.py` — The Brain
-* **Purpose:** Connects to the Gemini Flash API to refine general YOLO labels and create detailed 3-bullet descriptors.
-* **Key Components:**
-  * **Rate Limiting:** Enforces a cool-down period between requests to stay within rate-limit constraints.
-  * **Response Verification:** Evaluates API responses. If Gemini returns vague phrases (like *"something"* or *"unidentifiable object"*), the verifier rejects the response and keeps the YOLO label.
-  * **Callbacks:** Writes updates directly to the database via `on_object_verified` and `on_description_updated` events.
-* **Teacher's Explanation:**
-  > *"YOLO is fast but lacks context—it might label a toy dog and a real dog both as 'dog'. Gemini is smart but slow. We use YOLO to detect the object instantly, and then quietly send a cropped image to Gemini in the background to refine 'dog' to 'ceramic pug ornament' without freezing the screen."*
+## 7. Study Guide Q&A (Session Memory Edition)
 
----
-
-### File 7: `report_engine.py` — The Communicator
-* **Purpose:** Formats session data and active objects into a clean, structured ASCII report printed to the terminal and logged to a file.
-* **Key Components:**
-  * **ASCII Layout Manager:** Dynamically pads strings, constructs boxes, and wraps text to guarantee reports are perfectly aligned regardless of terminal width.
-  * **System Telemetry:** Uses `psutil` to track CPU, RAM, and FPS metrics and binds them to the database.
-* **Teacher's Explanation:**
-  > *"This is the presenter. It gathers short-term statistics from SceneMemory, hardware metrics from the operating system, and pushes them directly to the console and DatabaseManager, creating a permanent chronological audit log."*
-
----
-
-## 3. Important Design Patterns Explained Simply
-
-### A. The Producer-Consumer Pattern
-In this pattern, one part of the program creates data (the producer) and another part processes it (the consumer). They communicate through a shared, synchronized queue.
-
-* **In our project:** 
-  - *Producer:* The detection loop in `main.py` detects an object or generates a report.
-  - *Queue:* `_write_queue` in `DatabaseManager`.
-  - *Consumer:* `_writer_loop` running in the background thread.
-* **Why it matters:** It decouples the slow, unpredictable disk storage layer from the high-speed camera frame rate.
-
-### B. Thread-Safety with Locks (Mutexes)
-When multiple threads access the same variable or system resources, they can corrupt data (known as a **race condition**). 
-
-* **In our project:** The camera thread and main thread both access `_frame`. We protect it using:
-  ```python
-  with self._lock:
-      self._frame = frame
-  ```
-  While the camera thread is writing a new frame, the lock is acquired. If the main thread tries to read, it must wait until the write completes, preventing broken image arrays.
-
-### C. Write-Ahead Logging (WAL) in SQLite
-Standard SQLite locking locks the entire file during writes, preventing reads. 
-* **WAL Mode:** We execute `PRAGMA journal_mode = WAL;`.
-* **Why it matters:** WAL allows multiple threads to read the database at the same time a background thread is writing to it. This is essential for the `DatabaseManager` to run smoothly.
-
----
-
-## 4. Study Guide Q&A
-
-1. **Why does the `CameraThread` return a copy of the frame (`self._frame.copy()`) instead of the original reference?**
-   * *Answer:* To prevent the main thread from reading frame pixels at the same millisecond the camera background thread is updating them, which causes memory corruption.
-2. **What is the difference between `_submit_sync` and `_submit_async` in `database_manager.py`?**
-   * *Answer:* `_submit_sync` blocks the calling thread using a `threading.Event` until the database records the item and returns a row ID. `_submit_async` pushes the item to the queue and returns control immediately.
-3. **How does `OBJECT_STALE_TIMEOUT` in `config.py` protect the database from being flooded with deletion events?**
-   * *Answer:* If a tracked object disappears briefly (due to noise or occlusion), the system waits for the timeout before committing the `'removed'` event, keeping logs clean.
+1.  **Why do inactive objects show zero CPU utilization on the backend?**
+    *   *Answer:* Once an object transitions to `INACTIVE` (leaves the camera frame), it is no longer processed by YOLO, the event engine, or the relationship parser. Its state is frozen in the `EntityRegistry` memory, meaning it uses zero CPU cycles.
+2.  **What is the benefit of using an MJPEG stream over sending video frames via WebSockets?**
+    *   *Answer:* WebSockets require converting frames to Base64 strings, which increases data size by ~33% and places encoding/decoding overhead on both the Python server and the React UI. MJPEG uses native browser image decoding, leaving the WebSocket free to transmit lightweight JSON telemetry.
+3.  **How does the system prevent duplicate entities from registering when tracking is briefly lost?**
+    *   *Answer:* `EntityRegistry` runs a relinking mechanism (`_find_relinkable`). If an object disappears and reappear within 30 seconds with matching characteristics (label and category), the registry maps the new track back to the original entity instead of creating a new UUID.
+4.  **If the camera is muted, does the session memory reset?**
+    *   *Answer:* No. The session memory survives as long as the backend server thread is alive. Mutings, connection drops, or refreshing the browser page will not clear the accumulated memory of the room.
