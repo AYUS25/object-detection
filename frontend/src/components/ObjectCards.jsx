@@ -73,7 +73,8 @@ const ActiveCard = memo(({ obj }) => {
             {obj.inferred_display_label || obj.label}
           </p>
           <p className="text-[10px] text-text-muted">
-            {obj.category}{obj.brand ? ` • ${obj.brand}` : ''}
+            {obj.category}
+            {obj.product_type ? ` • ${obj.product_type}` : (obj.brand ? ` • ${obj.brand}` : '')}
           </p>
         </div>
         <span className="text-lg font-bold font-mono text-text-primary leading-none flex-shrink-0">
@@ -129,7 +130,8 @@ const InactiveCard = memo(({ obj }) => {
             {obj.inferred_display_label || obj.label}
           </p>
           <p className="text-[10px] text-text-muted">
-            {obj.category}{obj.brand ? ` • ${obj.brand}` : ''}
+            {obj.category}
+            {obj.product_type ? ` • ${obj.product_type}` : (obj.brand ? ` • ${obj.brand}` : '')}
           </p>
         </div>
         <span className="text-sm font-mono text-text-muted leading-none flex-shrink-0">

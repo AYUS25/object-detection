@@ -184,10 +184,14 @@ async def search_memory(query: str = Query(None), brand: str = None, category: s
 
 
 @app.get("/timeline")
-async def get_timeline(limit: int = Query(200)) -> JSONResponse:
-    """Fetch chronological event timeline for the session."""
+async def get_timeline(limit: int = Query(200), all_sessions: bool = Query(False)) -> JSONResponse:
+    """Fetch chronological event timeline for the session(s)."""
     session_id = _vision._session_id
-    timeline = timeline_engine.get_session_timeline(session_id, limit=limit)
+    if all_sessions:
+        timeline = timeline_engine.get_all_timeline(limit=limit)
+        session_id = "ALL"
+    else:
+        timeline = timeline_engine.get_session_timeline(session_id, limit=limit)
     return JSONResponse({"timeline": timeline, "session_id": session_id, "count": len(timeline)})
 
 
@@ -235,6 +239,37 @@ async def get_graph() -> JSONResponse:
     session_id = _vision._session_id
     graph = knowledge_graph.get_graph(session_id)
     return JSONResponse(graph)
+
+
+@app.get("/api/diagnostics")
+async def get_diagnostics() -> JSONResponse:
+    """Comprehensive diagnostic endpoint."""
+    state = _vision.get_state() if _vision else {}
+    status = state.get("status", {})
+    
+    # Get OCR telemetry safely
+    ocr_telemetry = {}
+    if _vision and hasattr(_vision, '_ocr_processor') and _vision._ocr_processor:
+        if hasattr(_vision._ocr_processor, 'get_telemetry'):
+            ocr_telemetry = _vision._ocr_processor.get_telemetry()
+    
+    return JSONResponse({
+        "status": "ok" if _vision and getattr(_vision, 'is_running', True) else "stopped",
+        "ocr_metrics": {
+            "queue_size": ocr_telemetry.get("queue_size", 0),
+            "submitted": ocr_telemetry.get("crops_submitted", 0),
+            "completed": ocr_telemetry.get("tasks_completed", 0),
+            "text_found": ocr_telemetry.get("text_found", 0),
+            "entities_enriched": ocr_telemetry.get("entities_enriched", 0),
+            "dropped": 0,
+        },
+        "total_events": _vision._total_events if _vision and hasattr(_vision, '_total_events') else 0,
+        "system": {
+            "fps": status.get("fps", 0.0),
+            "cpu": status.get("cpu", 0.0),
+            "ram_mb": status.get("ram_mb", 0.0),
+        }
+    })
 
 
 # ──────────────────────────────────────────────────────────────────────────────

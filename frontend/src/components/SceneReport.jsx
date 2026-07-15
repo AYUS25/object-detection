@@ -80,7 +80,10 @@ const ObjectDetail = memo(({ obj, index, dimmed }) => {
                 <span className="badge badge-accent text-[10px]">✦ Gemini</span>
               )}
             </div>
-            <span className="text-[11px] text-text-muted">{obj.category}{obj.brand ? ` • ${obj.brand}` : ''}</span>
+            <span className="text-[11px] text-text-muted">
+              {obj.category}
+              {obj.product_type ? ` • ${obj.product_type}` : (obj.brand ? ` • ${obj.brand}` : '')}
+            </span>
           </div>
         </div>
         <StatusBadge obj={obj} />

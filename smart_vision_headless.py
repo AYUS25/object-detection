@@ -159,11 +159,13 @@ class SmartVisionHeadless:
         self._db = DatabaseManager()
         self._session_id = self._db.start_session()
         self._verification_cache: dict = {}
-        self._gemini = GeminiVerifier(
-            self._verification_cache,
-            db_manager=self._db,
-            session_id=self._session_id,
-        )
+        self._gemini = None
+        if config.ENABLE_GEMINI:
+            self._gemini = GeminiVerifier(
+                self._verification_cache,
+                db_manager=self._db,
+                session_id=self._session_id,
+            )
         self._reporter = ReportEngine(
             self._scene_memory,
             db=self._db,
@@ -204,7 +206,8 @@ class SmartVisionHeadless:
         self._thread = threading.Thread(
             target=self._loop, daemon=True, name="VisionLoop"
         )
-        self._ocr_processor.start()
+        if config.ENABLE_OCR:
+            self._ocr_processor.start()
         self._snapshot_engine.start()
         self._thread.start()
         log.info("SmartVisionHeadless started (background thread)")
@@ -216,9 +219,11 @@ class SmartVisionHeadless:
             self._thread.join(timeout=5.0)
         if self._camera:
             self._camera.release()
-        self._ocr_processor.stop()
+        if config.ENABLE_OCR:
+            self._ocr_processor.stop()
         self._snapshot_engine.stop()
-        self._gemini.shutdown()
+        if config.ENABLE_GEMINI and self._gemini:
+            self._gemini.shutdown()
         self._reporter.shutdown()
         self._db.end_session(
             session_id=self._session_id,
@@ -285,6 +290,11 @@ class SmartVisionHeadless:
                     detections, self._verification_cache
                 )
 
+                # ── Entity Registry Update ─────────────────────────────────
+                relinked_tids = self._entity_registry.sync_from_scene_memory(
+                    self._scene_memory, self._verification_cache
+                )
+
                 # ── DB Logging ─────────────────────────────────────────────
                 for tid in new_ids:
                     rec = self._scene_memory.get_record(tid)
@@ -297,6 +307,7 @@ class SmartVisionHeadless:
                             category=rec.category,
                             confidence=rec.confidence,
                             bbox=rec.bbox,
+                            is_returned=(tid in relinked_tids)
                         )
                         self._total_events += 1
                         if tid not in self._seen_track_ids:
@@ -352,8 +363,12 @@ class SmartVisionHeadless:
                         )
                         self._total_events += 1
 
+                # ── Entity Registry Events Update ──────────────────────────
+                self._entity_registry.update_events(events)
+                self._entity_registry.update_relationships(rel_events)
+
                 # ── Gemini Verification ────────────────────────────────────
-                if run_inference:
+                if run_inference and config.ENABLE_GEMINI:
                     self._handle_verification(detections, frame, current_fps)
                     
                     # ── Feed Snapshot Engine ───────────────────────────────────
@@ -371,15 +386,10 @@ class SmartVisionHeadless:
                 # ── Periodic Scene Report (console) ────────────────────────
                 self._reporter.tick(current_fps)
 
-                # ── Entity Registry Sync ───────────────────────────────────
-                self._entity_registry.sync_from_scene_memory(
-                    self._scene_memory, self._verification_cache
-                )
-                self._entity_registry.update_events(events)
-                self._entity_registry.update_relationships(rel_events)
+
 
                 # ── Trigger OCR (Async) ────────────────────────────────────
-                if run_inference:
+                if run_inference and config.ENABLE_OCR:
                     for det in detections:
                         if det.track_id is not None:
                             x1, y1, x2, y2 = det.bbox
@@ -443,7 +453,7 @@ class SmartVisionHeadless:
                             "yolo": "running",
                             "tracker": "running",
                             "database": "connected",
-                            "gemini": "ready" if self._gemini.is_available else "unavailable",
+                            "gemini": "ready" if (config.ENABLE_GEMINI and self._gemini and self._gemini.is_available) else "unavailable",
                             "fps": round(current_fps, 1),
                             "cpu": round(cpu, 1),
                             "ram_mb": round(ram_mb, 1),
@@ -464,8 +474,9 @@ class SmartVisionHeadless:
     ) -> None:
         h, w = frame.shape[:2]
         auto_verify_ok = (
-            getattr(config, 'DEBUG_BYPASS_FPS_GATING', False)
-            or fps >= config.FPS_CRITICAL_THRESHOLD
+            config.ENABLE_AUTO_VERIFY and
+            (getattr(config, 'DEBUG_BYPASS_FPS_GATING', False)
+            or fps >= config.FPS_CRITICAL_THRESHOLD)
         )
         largest_det = None
         largest_area = 0

@@ -73,7 +73,15 @@ class QueryInterpreter:
                 filters["category"] = cat
                 break
                 
-        # 6. Time ranges - "today" is implied for session.
+        # 6. Fallback Text Search
+        # If no filters matched, and the query is just a single word or short phrase, treat it as a generic text search.
+        if not filters:
+            # Clean common prefixes like "show me", "find", "search for"
+            clean_q = re.sub(r'^(show\s+me\s+|show\s+|find\s+|search\s+for\s+)', '', q).strip()
+            if clean_q and len(clean_q.split()) <= 3:
+                filters["text"] = clean_q
+                
+        # 7. Time ranges - "today" is implied for session.
         # Could parse "between X and Y" but skipping for this simple implementation as requested.
 
         log.info("Parsed query '%s' -> %s", query, filters)

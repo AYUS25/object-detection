@@ -38,12 +38,12 @@ class SearchEngine:
             
             # Apply filters
             if "brand" in filters:
-                query += " AND t.brand = ?"
-                params.append(filters["brand"])
+                query += " AND t.brand LIKE ?"
+                params.append(f"%{filters['brand']}%")
                 
             if "product_type" in filters:
-                query += " AND t.product_type = ?"
-                params.append(filters["product_type"])
+                query += " AND t.product_type LIKE ?"
+                params.append(f"%{filters['product_type']}%")
                 
             if "category" in filters:
                 query += " AND t.category = ?"

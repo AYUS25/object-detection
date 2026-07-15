@@ -14,15 +14,32 @@ FRAME_HEIGHT: int = 480             # Capture height
 CAMERA_FPS: int = 30                # Target camera capture rate
 
 # ──────────────────────────────────────────────────────────────────────────────
-# DETECTION (YOLO11m)
+# DETECTION (YOLO11)
 # ──────────────────────────────────────────────────────────────────────────────
-YOLO_MODEL: str = "yolo11m.pt"      # Model weights filename
-MODELS_DIR: str = "models"          # Local directory for cached weights
-INFERENCE_SIZE: int = 640           # YOLO input resolution (640 = better small-object detection)
-CONFIDENCE_THRESHOLD: float = 0.45  # Minimum detection confidence (lower = catch more objects)
-NMS_IOU_THRESHOLD: float = 0.45     # Non-max suppression IoU
-MAX_DETECTIONS: int = 100           # Cap per-frame detection count
-TRACKER_TYPE: str = "botsort.yaml"  # BoT-SORT (appearance + motion re-ID)
+YOLO_MODEL_FAST: str = "yolo11n.pt"      # Default fast model
+YOLO_MODEL_ACCURATE: str = "yolo11m.pt"  # Verification model
+MODELS_DIR: str = "models"               # Local directory for cached weights
+
+NORMAL_INFERENCE_RESOLUTION: int = 640   # Base YOLO input resolution
+SMALL_OBJECT_INFERENCE_RESOLUTION: int = 960 # ROI verification resolution
+
+CONFIDENCE_THRESHOLD: float = 0.25       # Minimum detection confidence (lowered from 0.45)
+NMS_IOU_THRESHOLD: float = 0.45          # Non-max suppression IoU
+MAX_DETECTIONS: int = 100                # Cap per-frame detection count
+TRACKER_TYPE: str = "botsort.yaml"       # BoT-SORT (appearance + motion re-ID)
+
+# Small Object Verification
+ENABLE_SMALL_OBJECT_VERIFICATION: bool = False
+SMALL_OBJECT_AREA_THRESHOLD: float = 0.02 # Trigger verification if bbox area < 2% of frame
+SMALL_OBJECT_VERIFICATION_COOLDOWN: float = 1.0 # Seconds between verifications per entity
+MAX_VERIFICATIONS_PER_SECOND: int = 3     # Global cap on verifications per second
+
+# Dynamic Model Switching Hysteresis
+MODEL_SWITCH_COOLDOWN: float = 60.0       # Minimum seconds between model swaps
+SWITCH_TO_NANO_CPU_THRESHOLD: float = 85.0
+SWITCH_TO_NANO_FPS_THRESHOLD: float = 5.0
+SWITCH_TO_MEDIUM_CPU_THRESHOLD: float = 70.0
+SWITCH_TO_MEDIUM_FPS_THRESHOLD: float = 8.0
 
 # Frame skipping: run YOLO every Nth frame to protect FPS
 # When FPS < FRAME_SKIP_FPS_THRESHOLD, inference is run every FRAME_SKIP_N frames
@@ -52,6 +69,8 @@ STABILITY_WINDOW: float = 10.0      # Seconds of stability history for % metric
 # GEMINI VERIFICATION  (async background — never blocks detection loop)
 # ──────────────────────────────────────────────────────────────────────────────
 GEMINI_MODEL: str = "gemini-2.0-flash-lite"  # Cheapest multimodal flash model
+ENABLE_GEMINI: bool = False                  # Global toggle for Gemini
+ENABLE_AUTO_VERIFY: bool = False             # Toggle for auto-verification on low conf
 GEMINI_VERIFY_THRESHOLD: float = 0.70        # Auto-verify detections below this conf
 GEMINI_MAX_PENDING: int = 6                  # Max items queued for verification
 GEMINI_VERIFY_COOLDOWN: float = 3.0          # Minimum seconds between API calls
@@ -64,6 +83,7 @@ DEBUG_BYPASS_FPS_GATING: bool = True        # Ignore FPS limits for Gemini queue
 # OCR & PRODUCT INTELLIGENCE
 # ──────────────────────────────────────────────────────────────────────────────
 OCR_PRIMARY_ENGINE: str = "paddleocr"        # 'paddleocr' or 'easyocr'
+ENABLE_OCR: bool = False                     # Global toggle for OCR initialization and processing
 OCR_MIN_CONFIDENCE: float = 0.75             # Ignore text regions below this confidence
 OCR_MIN_BBOX_SIZE: int = 40                  # Min width/height of crop to run OCR
 OCR_ENTITY_COOLDOWN: float = 5.0             # Seconds between OCR attempts per entity

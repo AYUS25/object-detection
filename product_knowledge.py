@@ -122,7 +122,7 @@ def lookup_brand(text: str) -> dict:
     if not text:
         return {}
         
-    text_lower = text.lower()
+    text_lower = text.strip().lower()
     
     # We test for substrings, preferring exact or distinct word matches if possible.
     # We sort by length descending to match 'coca cola' before 'coca'

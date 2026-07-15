@@ -382,7 +382,7 @@ class DatabaseManager:
 
         if op == _OP_OBJECT_NEW:
             (session_id, track_id, yolo_label, display_label,
-             category, confidence, bbox) = args
+             category, confidence, bbox, is_returned) = args
             now = _iso_now()
             conn.execute(
                 """INSERT INTO tracked_objects
@@ -398,11 +398,12 @@ class DatabaseManager:
                  now, now, confidence, confidence, confidence, 1),
             )
             extra = json.dumps({"bbox": list(bbox)}) if bbox else None
+            event_type = "returned" if is_returned else "new"
             conn.execute(
                 """INSERT INTO object_events
                    (session_id, event_at, event_type, track_id, label, category, confidence, extra_data)
                    VALUES (?,?,?,?,?,?,?,?)""",
-                (session_id, now, "new", track_id, display_label, category, confidence, extra),
+                (session_id, now, event_type, track_id, display_label, category, confidence, extra),
             )
             return None
 
@@ -615,6 +616,22 @@ class DatabaseManager:
     # Public Async API  (fire-and-forget — detection loop never stalls)
     # ──────────────────────────────────────────────────────────────────────────
 
+    def on_ocr_result(
+        self,
+        session_id: int,
+        entity_id: str,
+        track_id: int,
+        raw_texts: List[str],
+        best_text: str,
+        brand: str,
+        inferred_label: str
+    ) -> None:
+        """Asynchronously log OCR result and update tracked_objects."""
+        self._submit_async(
+            _OP_OCR_RESULT,
+            (session_id, entity_id, track_id, raw_texts, best_text, brand, inferred_label)
+        )
+
     def save_report_objects(
         self, report_id: int, session_id: int, objects: List[dict]
     ) -> None:
@@ -630,11 +647,12 @@ class DatabaseManager:
         category: str,
         confidence: float,
         bbox: Optional[tuple] = None,
+        is_returned: bool = False,
     ) -> None:
         """Called when a new tracked object enters the scene. Async."""
         self._submit_async(
             _OP_OBJECT_NEW,
-            (session_id, track_id, yolo_label, display_label, category, confidence, bbox),
+            (session_id, track_id, yolo_label, display_label, category, confidence, bbox, is_returned),
         )
 
     def on_object_removed(

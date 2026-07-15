@@ -9,6 +9,7 @@ from image crops (numpy arrays). Runs entirely locally on CPU.
 import logging
 from typing import List
 import numpy as np
+import cv2
 
 import config
 
@@ -43,8 +44,7 @@ class OCREngine:
             self._engine = PaddleOCR(
                 use_angle_cls=True, 
                 lang='en', 
-                use_gpu=False,
-                show_log=False
+                use_gpu=False
             )
             self._engine_type = "paddleocr"
             log.info("PaddleOCR loaded successfully.")
@@ -87,6 +87,21 @@ class OCREngine:
         if w < config.OCR_MIN_BBOX_SIZE or h < config.OCR_MIN_BBOX_SIZE:
             return []
 
+        # -- OpenCV Preprocessing for better OCR accuracy --
+        try:
+            # 1. Upscale by 2x using cubic interpolation (helps with tiny text)
+            upscaled = cv2.resize(image_crop, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+            # 2. Convert to Grayscale
+            gray = cv2.cvtColor(upscaled, cv2.COLOR_BGR2GRAY)
+            # 3. Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            enhanced = clahe.apply(gray)
+            # 4. Convert back to BGR since PaddleOCR expects 3 channels
+            processed_crop = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+        except Exception as e:
+            log.warning("OCR preprocessing failed, using original crop: %s", e)
+            processed_crop = image_crop
+
         extracted_texts = []
 
         try:
@@ -94,7 +109,7 @@ class OCREngine:
                 # PaddleOCR result format:
                 # [[[[x1,y1], [x2,y2], [x3,y3], [x4,y4]], ('text', confidence)], ...]
                 # Sometimes it returns [None] or [[[...]]]
-                results = self._engine.ocr(image_crop, cls=True)
+                results = self._engine.ocr(processed_crop, cls=True)
                 if not results or not results[0]:
                     return []
                 
@@ -111,7 +126,7 @@ class OCREngine:
             elif self._engine_type == "easyocr":
                 # EasyOCR result format:
                 # [([[x,y], [x,y], [x,y], [x,y]], 'text', confidence), ...]
-                results = self._engine.readtext(image_crop)
+                results = self._engine.readtext(processed_crop)
                 for bbox, text_str, confidence in results:
                     if confidence >= config.OCR_MIN_CONFIDENCE:
                         extracted_texts.append(text_str)

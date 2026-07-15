@@ -11,7 +11,8 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 const API_BASE = 'http://localhost:8000'
 
 const EVENT_CONFIG = {
-  new:                  { color: 'bg-green-500/20 text-green-400 border-green-500/40',  icon: '➕', label: 'New' },
+  new:                  { color: 'bg-green-500/20 text-green-400 border-green-500/40',  icon: '✨', label: 'Entered' },
+  returned:             { color: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40', icon: '♻️', label: 'Returned' },
   removed:              { color: 'bg-red-500/20 text-red-400 border-red-500/40',        icon: '❌', label: 'Removed' },
   stationary:           { color: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40', icon: '⏸', label: 'Stationary' },
   moved:                { color: 'bg-blue-500/20 text-blue-400 border-blue-500/40',     icon: '↗', label: 'Moved' },
@@ -42,13 +43,16 @@ const TimelineView = ({ connected }) => {
   const [filterType,  setFilterType]  = useState('All')
   const [filterLabel, setFilterLabel] = useState('')
   const [paused,      setPaused]      = useState(false)
+  const [showAllSessions, setShowAllSessions] = useState(false)
   const [sessionId,   setSessionId]   = useState(null)
   const [count,       setCount]       = useState(0)
 
   const fetchTimeline = useCallback(async () => {
     if (paused) return
     try {
-      const res = await fetch(`${API_BASE}/timeline?limit=300`)
+      const limit = showAllSessions ? 500 : 300
+      const query = showAllSessions ? `?limit=${limit}&all_sessions=true` : `?limit=${limit}`
+      const res = await fetch(`${API_BASE}/timeline${query}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setTimeline(data.timeline || [])
@@ -60,7 +64,7 @@ const TimelineView = ({ connected }) => {
     } finally {
       setLoading(false)
     }
-  }, [paused])
+  }, [paused, showAllSessions])
 
   useEffect(() => {
     fetchTimeline()
@@ -135,6 +139,19 @@ const TimelineView = ({ connected }) => {
               </p>
             </div>
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setShowAllSessions(p => !p)
+                  setTimeline([]) // Clear while fetching
+                }}
+                className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                  showAllSessions
+                    ? 'bg-accent/20 text-accent border-accent/40 hover:bg-accent/30'
+                    : 'bg-bg border-border text-text-muted hover:text-accent hover:border-accent'
+                }`}
+              >
+                {showAllSessions ? '🌍 All History' : '⏱️ Current Session'}
+              </button>
               <button
                 onClick={() => setPaused(p => !p)}
                 className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${

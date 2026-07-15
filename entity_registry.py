@@ -250,6 +250,8 @@ class EntityRegistry:
         active_records = scene_memory.get_active_records()
         active_track_ids: set = set()
 
+        relinked_tids = set()
+        
         for rec in active_records:
             tid = rec.track_id
             if tid is None:
@@ -290,6 +292,11 @@ class EntityRegistry:
                     # Re-link an inactive entity to the new track_id
                     log.debug("[EntityRegistry] Re-linked entity %s ('%s') → track #%d",
                               entity.entity_id[:8], entity.label, tid)
+                    relinked_tids.add(tid)
+                    
+                    # Force the SceneMemory record to instantly shed its 'new' status
+                    # so the UI renders it immediately instead of suppressing it
+                    rec.is_new = False
 
                 self._track_to_entity[tid] = entity.entity_id
 
@@ -336,12 +343,15 @@ class EntityRegistry:
                           eid[:8], entity.label, entity.total_visible_duration)
                 # Remove stale track mapping
                 self._track_to_entity.pop(entity.track_id, None)
+                
+        return relinked_tids
 
     def _find_relinkable(self, label: str, category: str) -> Optional[Entity]:
         """
         Try to find an INACTIVE entity with the same label that disappeared
-        recently (within 30s) to re-link rather than creating a duplicate.
-        This handles the case where a person leaves and returns shortly after.
+        recently to re-link rather than creating a duplicate.
+        This handles the case where a person leaves and returns.
+        The timeout is intentionally massive (12 hours) to ensure identity persistence.
         """
         now = time.monotonic()
         candidates = [
@@ -349,7 +359,7 @@ class EntityRegistry:
             if e.state == STATE_INACTIVE
             and e.label.lower() == label.lower()
             and e.category == category
-            and (now - e.last_seen) < 30.0
+            and (now - e.last_seen) < 43200.0
         ]
         if not candidates:
             return None

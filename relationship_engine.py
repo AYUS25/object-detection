@@ -76,7 +76,9 @@ class RelationshipEngine:
             previous_rels = self._active_relationships.get(pair, set())
             new_rels = current_rels - previous_rels
             for rel in new_rels:
-                desc = self._format_desc(pair, rel, "began")
+                rec_a = next(r for r in stable_records if r.track_id == pair[0])
+                rec_b = next(r for r in stable_records if r.track_id == pair[1])
+                desc = self._format_desc(rec_a, rec_b, rel, "began")
                 events.append((pair[0], pair[1], "RELATIONSHIP_BEGIN", desc))
                 
         # Check for END events
@@ -84,7 +86,15 @@ class RelationshipEngine:
             current_rels = current_relationships.get(pair, set())
             ended_rels = previous_rels - current_rels
             for rel in ended_rels:
-                desc = self._format_desc(pair, rel, "ended")
+                # In END events, the object might have left the scene, so we might not find it in stable_records.
+                # Just use track_id as a fallback.
+                rec_a = next((r for r in stable_records if r.track_id == pair[0]), None)
+                rec_b = next((r for r in stable_records if r.track_id == pair[1]), None)
+                
+                label_a = rec_a.display_label if rec_a else f"Object #{pair[0]}"
+                label_b = rec_b.display_label if rec_b else f"Object #{pair[1]}"
+                
+                desc = self._format_desc_labels(label_a, label_b, rel, "ended")
                 events.append((pair[0], pair[1], "RELATIONSHIP_END", desc))
                 
         # 4. Update state
@@ -92,18 +102,23 @@ class RelationshipEngine:
         
         return events
 
-    def _format_desc(self, pair: Tuple[int, int], rel: str, action: str) -> str:
-        tA, tB = pair
+    def _format_desc(self, rec_a: Any, rec_b: Any, rel: str, action: str) -> str:
+        # Check if they have inferred display labels or regular labels
+        label_a = getattr(rec_a, 'inferred_display_label', getattr(rec_a, 'display_label', f"#{rec_a.track_id}"))
+        label_b = getattr(rec_b, 'inferred_display_label', getattr(rec_b, 'display_label', f"#{rec_b.track_id}"))
+        return self._format_desc_labels(label_a, label_b, rel, action)
+
+    def _format_desc_labels(self, label_a: str, label_b: str, rel: str, action: str) -> str:
         if rel == 'near':
-            return f"#{tA} and #{tB} {action} being near each other"
+            return f"{label_a} and {label_b} {action} being near each other"
         elif rel == 'overlapping':
-            return f"#{tA} and #{tB} {action} overlapping"
+            return f"{label_a} and {label_b} {action} overlapping"
         elif rel == 'A_inside_B':
-            return f"#{tA} {action} being inside #{tB}"
+            return f"{label_a} {action} being inside {label_b}"
         elif rel == 'B_inside_A':
-            return f"#{tB} {action} being inside #{tA}"
+            return f"{label_b} {action} being inside {label_a}"
         elif rel == 'A_on_top_of_B':
-            return f"#{tA} {action} being on top of #{tB}"
+            return f"{label_a} {action} being on top of {label_b}"
         elif rel == 'B_on_top_of_A':
-            return f"#{tB} {action} being on top of #{tA}"
+            return f"{label_b} {action} being on top of {label_a}"
         return f"Unknown relationship {rel} {action}"

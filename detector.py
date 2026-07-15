@@ -5,9 +5,10 @@ Real-time YOLO11m object detector with BoT-SORT tracking.
 Single responsibility: inference + box rendering.
 
 Key changes from v1:
-  - Double confidence filter removed (conf already applied in .track() call)
-  - Colour-coded bounding boxes: green=default, orange=verified, yellow=new
-  - Frame pre-resize before passing to YOLO (saves internal copy)
+    - Fast model (YOLO11n) for primary loop
+    - Accurate model (YOLO11m) for small object ROI verification
+    - Colour-coded bounding boxes: green=default, orange=verified, yellow=new
+    - Frame pre-resize before passing to YOLO (saves internal copy)
   - Clean model loading with proper fallback
 """
 
@@ -37,8 +38,10 @@ class ObjectDetector:
     """Wrapper around Ultralytics YOLO11m with BoT-SORT tracking."""
 
     def __init__(self) -> None:
-        self._model = None
+        self._model_fast = None
+        self._model_accurate = None
         self._class_names: List[str] = []
+        self._last_verification = {}
         self._load_model()
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -56,79 +59,91 @@ class ObjectDetector:
         models_dir = Path(config.MODELS_DIR)
         models_dir.mkdir(parents=True, exist_ok=True)
 
-        # Priority: models/ dir → project root → auto-download
-        candidates = [
-            models_dir / config.YOLO_MODEL,
-            Path(config.YOLO_MODEL),
-        ]
-        model_path = next((p for p in candidates if p.exists()), None)
+        def load_yolo(model_name: str) -> YOLO:
+            candidates = [
+                models_dir / model_name,
+                Path(model_name),
+            ]
+            model_path = next((p for p in candidates if p.exists()), None)
+            try:
+                if model_path:
+                    log.info("Loading YOLO model from: %s", model_path)
+                    model = YOLO(str(model_path))
+                else:
+                    log.info("Model %s not found locally — downloading...", model_name)
+                    model = YOLO(model_name)
+                    self._cache_model(model_name, models_dir / model_name)
+                return model
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to load YOLO model '{model_name}': {exc}\n"
+                    "Ensure internet access on first run, or place the .pt file in models/"
+                ) from exc
 
-        try:
-            if model_path:
-                log.info("Loading YOLO model from: %s", model_path)
-                self._model = YOLO(str(model_path))
-            else:
-                log.info("Model %s not found locally — downloading...", config.YOLO_MODEL)
-                self._model = YOLO(config.YOLO_MODEL)
-                # Cache to models/ for future offline use
-                self._cache_model(models_dir / config.YOLO_MODEL)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to load YOLO model '{config.YOLO_MODEL}': {exc}\n"
-                "Ensure internet access on first run, or place the .pt file in models/"
-            ) from exc
+        self._model_fast = load_yolo(config.YOLO_MODEL_FAST)
+        self._model_accurate = load_yolo(config.YOLO_MODEL_ACCURATE) if config.ENABLE_SMALL_OBJECT_VERIFICATION else None
 
-        if hasattr(self._model, "names"):
-            raw = self._model.names
+        if hasattr(self._model_fast, "names"):
+            raw = self._model_fast.names
             self._class_names = list(raw.values()) if isinstance(raw, dict) else list(raw)
 
         log.info(
-            "YOLO11m loaded. Classes: %d | Inference size: %dpx | Tracker: %s",
-            len(self._class_names), config.INFERENCE_SIZE, config.TRACKER_TYPE,
+            "YOLO models loaded. Classes: %d | Base Size: %dpx | Tracker: %s",
+            len(self._class_names), config.NORMAL_INFERENCE_RESOLUTION, config.TRACKER_TYPE,
         )
 
-    def _cache_model(self, target: Path) -> None:
+    def _cache_model(self, model_name: str, target: Path) -> None:
         """Copy downloaded model weights to models/ for offline future use."""
         import shutil
         candidates = [
-            Path(config.YOLO_MODEL),
-            Path.home() / ".ultralytics" / "assets" / config.YOLO_MODEL,
+            Path(model_name),
+            Path.home() / ".ultralytics" / "assets" / model_name,
         ]
         for src in candidates:
             if src.exists() and src != target:
                 shutil.copy2(str(src), str(target))
-                log.info("Cached model to %s for offline use.", target)
+                log.info("Cached model %s to %s for offline use.", model_name, target)
                 return
 
     # ──────────────────────────────────────────────────────────────────────────
     # Inference
     # ──────────────────────────────────────────────────────────────────────────
 
-    def detect(self, frame: np.ndarray) -> List[Detection]:
+    def detect(self, frame: np.ndarray, use_accurate: bool = False) -> List[Detection]:
         """
-        Run YOLO11m + BoT-SORT on one frame.
+        Run YOLO11 + BoT-SORT on one frame.
         Returns a list of Detection objects with track IDs assigned.
+        If use_accurate is True, uses YOLO_MODEL_ACCURATE at NORMAL resolution.
+        Otherwise uses YOLO_MODEL_FAST and performs ROI verification for small objects.
         """
-        if self._model is None or frame is None or frame.size == 0:
+        model = self._model_accurate if use_accurate else self._model_fast
+        
+        if model is None or frame is None or frame.size == 0:
             return []
 
         try:
-            results = self._model.track(
+            results = model.track(
                 source=frame,
-                conf=config.CONFIDENCE_THRESHOLD,   # applied internally — not repeated
+                conf=config.CONFIDENCE_THRESHOLD,
                 iou=config.NMS_IOU_THRESHOLD,
                 max_det=config.MAX_DETECTIONS,
-                imgsz=config.INFERENCE_SIZE,
+                imgsz=config.NORMAL_INFERENCE_RESOLUTION,
                 verbose=False,
                 stream=False,
-                persist=True,                        # BoT-SORT state persists across frames
+                persist=True,
                 tracker=config.TRACKER_TYPE,
             )
         except Exception as exc:
             log.warning("YOLO inference error: %s", exc)
             return []
 
+        import time
+        now = time.monotonic()
+        frame_area = frame.shape[0] * frame.shape[1]
+        
         detections: List[Detection] = []
+        verifications_this_second = 0
+        
         for result in results:
             if result.boxes is None:
                 continue
@@ -138,15 +153,44 @@ class ObjectDetector:
                 label = (
                     self._class_names[cls_id]
                     if cls_id < len(self._class_names)
-                    else str(cls_id)
+                    else f"class_{cls_id}"
                 )
-                x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+                
+                # Original frame coordinates
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
                 track_id = int(box.id[0]) if box.id is not None else None
+                
+                # --- Small Object Verification Logic ---
+                if config.ENABLE_SMALL_OBJECT_VERIFICATION and not use_accurate and track_id is not None:
+                    bbox_area = (x2 - x1) * (y2 - y1)
+                    if bbox_area / frame_area < config.SMALL_OBJECT_AREA_THRESHOLD:
+                        last_v = self._last_verification.get(track_id, 0)
+                        if now - last_v >= config.SMALL_OBJECT_VERIFICATION_COOLDOWN:
+                            if verifications_this_second < config.MAX_VERIFICATIONS_PER_SECOND:
+                                # Run Verification on Crop
+                                crop = frame[max(0, y1):min(frame.shape[0], y2), 
+                                             max(0, x1):min(frame.shape[1], x2)]
+                                if crop.size > 0:
+                                    verifications_this_second += 1
+                                    self._last_verification[track_id] = now
+                                    try:
+                                        v_res = self._model_accurate.predict(
+                                            source=crop,
+                                            conf=config.CONFIDENCE_THRESHOLD,
+                                            imgsz=config.SMALL_OBJECT_INFERENCE_RESOLUTION,
+                                            verbose=False,
+                                        )
+                                        if v_res and v_res[0].boxes and len(v_res[0].boxes) > 0:
+                                            # Take the best verification
+                                            best_vbox = sorted(v_res[0].boxes, key=lambda b: float(b.conf[0]), reverse=True)[0]
+                                            v_cls = int(best_vbox.cls[0])
+                                            conf = float(best_vbox.conf[0])
+                                            label = self._class_names[v_cls] if v_cls < len(self._class_names) else f"class_{v_cls}"
+                                            log.info("Verified small object %s (ID %s) with conf %.2f", label, track_id, conf)
+                                    except Exception as exc:
+                                        log.warning("YOLO verification error: %s", exc)
 
-                detections.append(
-                    Detection(label=label, confidence=conf,
-                              bbox=(x1, y1, x2, y2), track_id=track_id)
-                )
+                detections.append(Detection(label, conf, (x1, y1, x2, y2), track_id))
 
         return detections
 

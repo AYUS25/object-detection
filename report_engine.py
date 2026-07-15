@@ -246,26 +246,27 @@ class ReportEngine:
         status_tag = ""
         if rec.is_new:
             status_tag = "  [NEW]"
-        elif rec.gemini_verified:
-            status_tag = "  [Gemini verified]"
-        elif rec.gemini_description:
-            status_tag = "  [analysed]"
-        elif rec.gemini_skipped_reason == "LOW_FPS":
-            status_tag = "  [Skipped: Low FPS]"
-        elif rec.gemini_skipped_reason in ("BUDGET_EXCEEDED", "GEMINI_BUDGET_EXCEEDED"):
-            status_tag = "  [Skipped: Budget Exceeded]"
-        elif rec.gemini_skipped_reason == "QUEUE_FULL":
-            status_tag = "  [Skipped: Queue Full]"
-        elif rec.gemini_skipped_reason == "GEMINI_UNAVAILABLE":
-            status_tag = "  [Failed: API Unavailable]"
-        elif rec.gemini_skipped_reason == "GEMINI_TIMEOUT":
-            status_tag = "  [Failed: Timeout]"
-        elif rec.gemini_skipped_reason == "GEMINI_API_ERROR":
-            status_tag = "  [Failed: API Error]"
-        elif rec.gemini_skipped_reason == "GEMINI_PARSE_FAILED":
-            status_tag = "  [Failed: Parse Error]"
-        else:
-            status_tag = "  [analysing...]"
+        elif config.ENABLE_GEMINI:
+            if rec.gemini_verified:
+                status_tag = "  [Gemini verified]"
+            elif rec.gemini_description:
+                status_tag = "  [analysed]"
+            elif rec.gemini_skipped_reason == "LOW_FPS":
+                status_tag = "  [Skipped: Low FPS]"
+            elif rec.gemini_skipped_reason in ("BUDGET_EXCEEDED", "GEMINI_BUDGET_EXCEEDED"):
+                status_tag = "  [Skipped: Budget Exceeded]"
+            elif rec.gemini_skipped_reason == "QUEUE_FULL":
+                status_tag = "  [Skipped: Queue Full]"
+            elif rec.gemini_skipped_reason == "GEMINI_UNAVAILABLE":
+                status_tag = "  [Failed: API Unavailable]"
+            elif rec.gemini_skipped_reason == "GEMINI_TIMEOUT":
+                status_tag = "  [Failed: Timeout]"
+            elif rec.gemini_skipped_reason == "GEMINI_API_ERROR":
+                status_tag = "  [Failed: API Error]"
+            elif rec.gemini_skipped_reason == "GEMINI_PARSE_FAILED":
+                status_tag = "  [Failed: Parse Error]"
+            else:
+                status_tag = "  [analysing...]"
 
         header = f"  OBJECT {idx} — {rec.display_label.title()}  ({rec.category}){status_tag}"
         lines.append(self._padded(header, W))
@@ -279,28 +280,29 @@ class ReportEngine:
         lines.append(self._padded(detail, W))
 
         # ── Gemini description bullets ─────────────────────────────────────
-        if rec.gemini_description:
-            for bullet_line in rec.gemini_description.splitlines():
-                lines.append(self._padded(bullet_line, W))
-        else:
-            if rec.gemini_skipped_reason == "LOW_FPS":
-                lines.append(self._padded("    ▸ [Skipped: Low FPS]", W))
-            elif rec.gemini_skipped_reason in ("BUDGET_EXCEEDED", "GEMINI_BUDGET_EXCEEDED"):
-                lines.append(self._padded("    ▸ [Skipped: Budget Exceeded]", W))
-            elif rec.gemini_skipped_reason == "QUEUE_FULL":
-                lines.append(self._padded("    ▸ [Skipped: Queue Full]", W))
-            elif rec.gemini_skipped_reason == "GEMINI_UNAVAILABLE":
-                lines.append(self._padded("    ▸ [Failed: API Unavailable]", W))
-            elif rec.gemini_skipped_reason == "GEMINI_TIMEOUT":
-                lines.append(self._padded("    ▸ [Failed: Timeout]", W))
-            elif rec.gemini_skipped_reason == "GEMINI_API_ERROR":
-                lines.append(self._padded("    ▸ [Failed: API Error]", W))
-            elif rec.gemini_skipped_reason == "GEMINI_PARSE_FAILED":
-                lines.append(self._padded("    ▸ [Failed: Parse Error]", W))
-            elif rec.is_new:
-                lines.append(self._padded("    ▸ Just appeared — analysis queued...", W))
+        if config.ENABLE_GEMINI:
+            if rec.gemini_description:
+                for bullet_line in rec.gemini_description.splitlines():
+                    lines.append(self._padded(bullet_line, W))
             else:
-                lines.append(self._padded("    ▸ Pending Gemini analysis...", W))
+                if rec.gemini_skipped_reason == "LOW_FPS":
+                    lines.append(self._padded("    ▸ [Skipped: Low FPS]", W))
+                elif rec.gemini_skipped_reason in ("BUDGET_EXCEEDED", "GEMINI_BUDGET_EXCEEDED"):
+                    lines.append(self._padded("    ▸ [Skipped: Budget Exceeded]", W))
+                elif rec.gemini_skipped_reason == "QUEUE_FULL":
+                    lines.append(self._padded("    ▸ [Skipped: Queue Full]", W))
+                elif rec.gemini_skipped_reason == "GEMINI_UNAVAILABLE":
+                    lines.append(self._padded("    ▸ [Failed: API Unavailable]", W))
+                elif rec.gemini_skipped_reason == "GEMINI_TIMEOUT":
+                    lines.append(self._padded("    ▸ [Failed: Timeout]", W))
+                elif rec.gemini_skipped_reason == "GEMINI_API_ERROR":
+                    lines.append(self._padded("    ▸ [Failed: API Error]", W))
+                elif rec.gemini_skipped_reason == "GEMINI_PARSE_FAILED":
+                    lines.append(self._padded("    ▸ [Failed: Parse Error]", W))
+                elif rec.is_new:
+                    lines.append(self._padded("    ▸ Just appeared — analysis queued...", W))
+                else:
+                    lines.append(self._padded("    ▸ Pending Gemini analysis...", W))
 
         return lines
 

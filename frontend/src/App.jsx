@@ -16,6 +16,7 @@ import ObjectCards from './components/ObjectCards'
 import SystemStatus from './components/SystemStatus'
 import MemorySearch from './components/MemorySearch'
 import TimelineView from './components/TimelineView'
+import Diagnostics from './components/Diagnostics'
 
 export default function App() {
   const { data, connected } = useWebSocket()
@@ -46,7 +47,7 @@ export default function App() {
       
       {/* Navigation Tabs */}
       <div className="bg-card border-b border-border px-6 flex gap-6">
-        {['Dashboard', 'Objects', 'Memory Search', 'Timeline', 'System'].map(tab => (
+        {['Dashboard', 'Objects', 'Memory Search', 'Timeline', 'Diagnostics', 'System'].map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -86,6 +87,12 @@ export default function App() {
         
         {activeTab === 'Timeline' && (
           <TimelineView connected={connected} />
+        )}
+        
+        {activeTab === 'Diagnostics' && (
+          <div className="overflow-y-auto p-4">
+            <Diagnostics />
+          </div>
         )}
 
         {activeTab === 'System' && (
