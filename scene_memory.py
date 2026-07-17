@@ -392,6 +392,10 @@ class SceneMemory:
         """Objects that left the scene recently (within _removed_timeout)."""
         return list(self._recently_removed.values())
 
+    def get_recently_removed_dict(self) -> Dict[int, ObjectRecord]:
+        """Direct dict access for O(1) track-id lookup (no list copy)."""
+        return self._recently_removed
+
     def get_new_objects(self) -> List[ObjectRecord]:
         """Active objects still within their new-object grace period."""
         return [r for r in self._active.values() if r.is_new]

@@ -239,24 +239,56 @@ class EntityRegistry:
         """
         Pull the latest SceneMemory state into session memory.
 
-        Logic:
-          1. For each active record in SceneMemory:
-             - If entity exists → update mutable fields, ensure ACTIVE
-             - If new track_id → create Entity IF confidence >= 0.80
-          2. For each entity currently marked ACTIVE that is NOT in SceneMemory:
-             - Mark it INACTIVE, freeze its visible duration
+        ── CRITICAL ORDERING FIX ────────────────────────────────────────────────
+        The method must run in THREE phases, not two:
+
+          Phase 1 — Compute which track_ids are present this frame.
+          Phase 2 — Deactivate ACTIVE entities whose track_id disappeared  ← FIRST
+          Phase 3 — Process new/existing active records                    ← SECOND
+
+        WHY ORDER MATTERS:
+          When an object moves fast, BoT-SORT may drop track_id=5 and assign
+          track_id=6 to the same object IN THE SAME FRAME. _find_relinkable
+          searches for INACTIVE entities by label. If we process new records
+          BEFORE deactivating, entity UUID=X (track_id=5) is still STATE_ACTIVE
+          when _find_relinkable runs → it finds nothing → creates a NEW entity
+          UUID=Y for track_id=6 → UUID=X is permanently stuck INACTIVE → watchlist
+          alert fires and never clears.
+
+          With Phase 2 before Phase 3: entity UUID=X is INACTIVE before
+          _find_relinkable runs → found and relinked to track_id=6 → UUID=X
+          stays active → watchlist sees it as present. Correct.
+        ─────────────────────────────────────────────────────────────────────────
         """
         now = time.monotonic()
         active_records = scene_memory.get_active_records()
-        active_track_ids: set = set()
 
+        # ── Phase 1: Compute active track_id set for this frame ──────────────
+        active_track_ids: set = set()
+        for rec in active_records:
+            if rec.track_id is not None:
+                active_track_ids.add(rec.track_id)
+
+        # ── Phase 2: Deactivate entities whose track vanished — BEFORE relinking
+        # This must run first so _find_relinkable sees them as INACTIVE.
+        for eid, entity in self._session.items():
+            if entity.state == STATE_ACTIVE and entity.track_id not in active_track_ids:
+                entity.total_visible_duration += (now - entity._active_since)
+                entity.state = STATE_INACTIVE
+                entity.last_seen = now
+                log.debug(
+                    "[EntityRegistry] Deactivated entity %s ('%s') — visible: %.1fs",
+                    eid[:8], entity.label, entity.total_visible_duration,
+                )
+                self._track_to_entity.pop(entity.track_id, None)
+
+        # ── Phase 3: Process active records — relink or create ───────────────
         relinked_tids = set()
-        
+
         for rec in active_records:
             tid = rec.track_id
             if tid is None:
                 continue
-            active_track_ids.add(tid)
 
             # Only admit objects meeting the confidence gate
             if rec.confidence < SESSION_MIN_CONFIDENCE:
@@ -266,8 +298,9 @@ class EntityRegistry:
             if eid and eid in self._session:
                 entity = self._session[eid]
             else:
-                # New entity — check if we can link to an existing INACTIVE
-                # entity with the same label (simple label-match re-link)
+                # Unknown track_id — try to relink to a recently deactivated entity.
+                # Because Phase 2 already ran, same-label INACTIVE entities are
+                # now correctly available for relinking.
                 entity = self._find_relinkable(rec.display_label, rec.category)
                 if entity is None:
                     entity = Entity(
@@ -286,33 +319,36 @@ class EntityRegistry:
                     )
                     self._session[entity.entity_id] = entity
                     self._total_registered += 1
-                    log.debug("[EntityRegistry] New session entity %s → track #%d '%s'",
-                              entity.entity_id[:8], tid, rec.display_label)
+                    log.debug(
+                        "[EntityRegistry] New session entity %s → track #%d '%s'",
+                        entity.entity_id[:8], tid, rec.display_label,
+                    )
                 else:
-                    # Re-link an inactive entity to the new track_id
-                    log.debug("[EntityRegistry] Re-linked entity %s ('%s') → track #%d",
-                              entity.entity_id[:8], entity.label, tid)
+                    # Re-link: same object, new track_id — identity preserved
+                    log.debug(
+                        "[EntityRegistry] Re-linked entity %s ('%s') → track #%d",
+                        entity.entity_id[:8], entity.label, tid,
+                    )
                     relinked_tids.add(tid)
-                    
-                    # Force the SceneMemory record to instantly shed its 'new' status
-                    # so the UI renders it immediately instead of suppressing it
+                    # Shed 'new' flag so UI renders immediately without grace delay
                     rec.is_new = False
 
                 self._track_to_entity[tid] = entity.entity_id
 
-            # ── Update mutable fields ──────────────────────────────────────
+            # ── Reactivate if it was INACTIVE (relink path or race condition) ──
             if entity.state == STATE_INACTIVE:
-                # Reactivating — record when it came back
                 entity._active_since = now
                 entity.state = STATE_ACTIVE
-                log.debug("[EntityRegistry] Reactivated entity %s ('%s')",
-                          entity.entity_id[:8], entity.label)
+                log.debug(
+                    "[EntityRegistry] Reactivated entity %s ('%s')",
+                    entity.entity_id[:8], entity.label,
+                )
 
+            # ── Update mutable fields from latest detection ───────────────────
             entity.track_id = tid
             entity.label = rec.display_label
             entity.yolo_label = rec.yolo_label
             entity.category = rec.category
-            # Keep highest confidence ever seen
             if rec.confidence > entity.confidence:
                 entity.confidence = rec.confidence
             entity.bbox = rec.bbox
@@ -323,9 +359,9 @@ class EntityRegistry:
             if rec.gemini_description and not entity.gemini_description:
                 entity.gemini_description = rec.gemini_description
 
-            # Detection history snapshot
+            # Detection history snapshot (capped at 500)
             entity.detection_history.append({
-                "t": round(now, 3),
+                "t":    round(now, 3),
                 "conf": round(rec.confidence, 4),
                 "bbox": list(rec.bbox),
             })

@@ -18,6 +18,7 @@ Start with:
 
 import asyncio
 import logging
+import time as _time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -32,6 +33,7 @@ from search_engine import SearchEngine
 from timeline_engine import TimelineEngine
 from knowledge_graph import KnowledgeGraph
 from query_interpreter import QueryInterpreter
+from services.watchlist_manager import WatchlistManager
 
 log = logging.getLogger("web_server")
 
@@ -93,6 +95,9 @@ search_engine = SearchEngine()
 timeline_engine = TimelineEngine()
 knowledge_graph = KnowledgeGraph()
 query_interpreter = QueryInterpreter()
+
+# Object Watchlist — isolated feature, zero inference cost
+_watchlist = WatchlistManager()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # REST Endpoints
@@ -288,13 +293,25 @@ async def websocket_live(ws: WebSocket):
       relationships    — all session relationships with counts
       status           — component health + FPS/CPU/RAM
       report           — summary + category counts + session stats
+      watchlist        — current watchlist status (idle / visible / lost / returned)
     """
     await ws.accept()
     log.info("WebSocket client connected: %s", ws.client)
+    _last_tick = _time.monotonic()
     try:
         while True:
+            now = _time.monotonic()
+            elapsed = now - _last_tick
+            _last_tick = now
+
             state = _vision.get_state()
             report = state.get("report", {})
+
+            # ── Tick watchlist (consumes only EntityRegistry state) ──────────
+            try:
+                _watchlist.tick(_vision.get_entity_registry(), elapsed=max(elapsed, 0.1))
+            except Exception as _we:
+                log.debug("[Watchlist] tick error: %s", _we)
 
             payload = {
                 "objects":          state.get("objects", []),
@@ -317,6 +334,8 @@ async def websocket_live(ws: WebSocket):
                     "session_by_category":report.get("session_by_category", {}),
                     "total_registered":   report.get("total_registered", 0),
                 },
+                # ── Watchlist state pushed every second ───────────────────────
+                "watchlist": _watchlist.get_status(),
             }
 
             await ws.send_json(payload)
@@ -355,6 +374,61 @@ async def video_stream():
             "Access-Control-Allow-Origin": "*",
         },
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Object Watchlist Endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/watchlist/available")
+async def watchlist_available() -> JSONResponse:
+    """
+    Return currently ACTIVE entities suitable for the watchlist dropdown.
+    Source: EntityRegistry.get_active() — conf >= 80%, age >= 2s.
+    These are already stabilised entities; no detector query needed.
+    """
+    registry = _vision.get_entity_registry()
+    available = _watchlist.get_available(registry)
+    return JSONResponse({"available": available, "count": len(available)})
+
+
+@app.post("/watchlist/watch")
+async def watchlist_start(body: dict) -> JSONResponse:
+    """
+    Start monitoring an entity.
+    Body: {"entity_uuid": str, "display_label": str, "category": str}
+    """
+    entity_uuid   = body.get("entity_uuid", "").strip()
+    display_label = body.get("display_label", "").strip()
+    category      = body.get("category", "").strip()
+
+    if not entity_uuid or not display_label:
+        return JSONResponse({"error": "entity_uuid and display_label are required"}, status_code=400)
+
+    # Verify entity actually exists and is active right now
+    registry = _vision.get_entity_registry()
+    entity = registry._session.get(entity_uuid)
+    if entity is None:
+        return JSONResponse({"error": f"Entity '{entity_uuid[:8]}' not found in registry"}, status_code=404)
+
+    _watchlist.watch(entity_uuid, display_label, category)
+    return JSONResponse({"ok": True, "watching": display_label})
+
+
+@app.post("/watchlist/stop")
+async def watchlist_stop() -> JSONResponse:
+    """Stop monitoring the current entity."""
+    label = _watchlist.current_item.display_label if _watchlist.current_item else None
+    _watchlist.stop()
+    return JSONResponse({"ok": True, "stopped": label})
+
+
+@app.get("/watchlist/status")
+async def watchlist_status() -> JSONResponse:
+    """
+    Current watchlist state — polled by UI as fallback if WebSocket unavailable.
+    """
+    return JSONResponse(_watchlist.get_status())
 
 
 # ──────────────────────────────────────────────────────────────────────────────

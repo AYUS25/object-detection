@@ -3,15 +3,25 @@ relationship_engine.py
 ======================
 State-based Relationship Engine. Evaluates purely geometric relationships
 between stable objects and tracks state transitions to emit events.
+
+Performance: throttled to RELATIONSHIP_EVAL_HZ (default 5 Hz) to avoid
+paying O(N²) spatial check cost on every 30 FPS frame.
 """
 
-from typing import List, Tuple, Set, Dict, Any
+import time
+from typing import List, Tuple, Set, Dict, Any, Optional
 import spatial_engine
+
+# Max frequency at which spatial pair-checks are evaluated (Hz)
+_RELATIONSHIP_EVAL_HZ: float = 5.0
+_RELATIONSHIP_EVAL_INTERVAL: float = 1.0 / _RELATIONSHIP_EVAL_HZ
 
 class RelationshipEngine:
     def __init__(self):
         # Maps (track_id_A, track_id_B) -> set of active relationships (e.g., {'near', 'A_inside_B'})
         self._active_relationships: Dict[Tuple[int, int], Set[str]] = {}
+        # Throttle: track last time we ran the full O(N²) evaluation
+        self._last_eval: float = 0.0
 
     def _is_inside_valid(self, cat_inner: str, cat_outer: str) -> bool:
         if cat_inner == 'Humans' and cat_outer in ('Electronics', 'Furniture'):
@@ -30,10 +40,20 @@ class RelationshipEngine:
         Evaluate relationships among stable objects.
         Returns a list of transition events: (track_id_A, track_id_B, event_type, description)
         where event_type is 'RELATIONSHIP_BEGIN' or 'RELATIONSHIP_END'.
+        Throttled to _RELATIONSHIP_EVAL_HZ to avoid O(N²) cost every frame.
         """
+        # Throttle: skip evaluation if called too soon
+        now = time.monotonic()
+        if now - self._last_eval < _RELATIONSHIP_EVAL_INTERVAL:
+            return []   # Return empty — no change possible in <200ms anyway
+        self._last_eval = now
+
         # 1. Stability Gating: Filter for stable objects
         stable_records = [r for r in records if not r.is_new]
-        
+
+        # Build O(1) lookup dict: track_id -> record
+        record_map: Dict[int, Any] = {r.track_id: r for r in stable_records}
+
         # 2. Compute current frame relationships
         current_relationships: Dict[Tuple[int, int], Set[str]] = {}
         
@@ -76,24 +96,25 @@ class RelationshipEngine:
             previous_rels = self._active_relationships.get(pair, set())
             new_rels = current_rels - previous_rels
             for rel in new_rels:
-                rec_a = next(r for r in stable_records if r.track_id == pair[0])
-                rec_b = next(r for r in stable_records if r.track_id == pair[1])
-                desc = self._format_desc(rec_a, rec_b, rel, "began")
-                events.append((pair[0], pair[1], "RELATIONSHIP_BEGIN", desc))
-                
+                # O(1) dict lookup instead of O(N) linear search
+                rec_a = record_map.get(pair[0])
+                rec_b = record_map.get(pair[1])
+                if rec_a and rec_b:
+                    desc = self._format_desc(rec_a, rec_b, rel, "began")
+                    events.append((pair[0], pair[1], "RELATIONSHIP_BEGIN", desc))
+
         # Check for END events
         for pair, previous_rels in self._active_relationships.items():
             current_rels = current_relationships.get(pair, set())
             ended_rels = previous_rels - current_rels
             for rel in ended_rels:
-                # In END events, the object might have left the scene, so we might not find it in stable_records.
-                # Just use track_id as a fallback.
-                rec_a = next((r for r in stable_records if r.track_id == pair[0]), None)
-                rec_b = next((r for r in stable_records if r.track_id == pair[1]), None)
-                
+                # O(1) dict lookup; objects may have left the scene
+                rec_a = record_map.get(pair[0])
+                rec_b = record_map.get(pair[1])
+
                 label_a = rec_a.display_label if rec_a else f"Object #{pair[0]}"
                 label_b = rec_b.display_label if rec_b else f"Object #{pair[1]}"
-                
+
                 desc = self._format_desc_labels(label_a, label_b, rel, "ended")
                 events.append((pair[0], pair[1], "RELATIONSHIP_END", desc))
                 

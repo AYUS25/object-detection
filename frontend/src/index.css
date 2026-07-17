@@ -125,3 +125,9 @@ html, body, #root {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/* ── Watchlist alert glow (LOST state) ───────────────────────────────────── */
+@keyframes alertGlow {
+  0%, 100% { box-shadow: 0 0 10px rgba(245, 158, 11, 0.15), 0 0 0 1px rgba(245,158,11,0.25); }
+  50%       { box-shadow: 0 0 22px rgba(245, 158, 11, 0.35), 0 0 0 1px rgba(245,158,11,0.45); }
+}

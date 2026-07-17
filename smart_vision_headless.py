@@ -191,6 +191,13 @@ class SmartVisionHeadless:
             "scene_stability": 0.0, "report": {},
         }
 
+        # ── Report build throttle ──────────────────────────────────────────
+        # build_report() serialises all entity dicts — expensive at 30 FPS.
+        # WebSocket reads every 1s, so we rebuild every 1s to match.
+        self._last_report_build: float = 0.0
+        self._last_built_report: Optional[dict] = None
+        self._report_build_interval: float = 1.0   # seconds between full report builds
+
         self._fps_tracker = _FPSTracker()
         self._camera: Optional[_CameraThread] = None
         self._thread: Optional[threading.Thread] = None
@@ -412,7 +419,7 @@ class SmartVisionHeadless:
                 )
                 jpeg_bytes = jpeg_buf.tobytes() if ok else None
 
-                # ── System stats ───────────────────────────────────────────────
+                # ── System stats (cheap — no dict allocation) ──────────────────
                 cpu = ram_mb = 0.0
                 if _PSUTIL_OK:
                     try:
@@ -424,41 +431,63 @@ class SmartVisionHeadless:
                 session_time = time.monotonic() - self._start_time
                 scene_stability = self._scene_memory.get_stability_pct()
 
-                # ── Build structured report ────────────────────────────────
-                report = self._entity_registry.build_report(
-                    fps=current_fps,
-                    cpu=cpu,
-                    ram_mb=ram_mb,
-                    session_time=session_time,
-                    scene_stability=scene_stability,
-                )
+                # ── Build structured report — throttled to 1s ─────────────────
+                # build_report() serialises all entities to dicts (expensive at 30 FPS).
+                # The WebSocket reads state every 1s, so building every frame wastes ~29
+                # serialisation passes per second for no UI benefit.
+                _now = time.monotonic()
+                if (_now - self._last_report_build) >= self._report_build_interval:
+                    self._last_report_build = _now
+                    report = self._entity_registry.build_report(
+                        fps=current_fps,
+                        cpu=cpu,
+                        ram_mb=ram_mb,
+                        session_time=session_time,
+                        scene_stability=scene_stability,
+                    )
+                    # Cache the built report for reuse between build intervals
+                    self._last_built_report = report
+                else:
+                    # Reuse previous report — only update the fast-changing scalars
+                    report = self._last_built_report
+                    if report:
+                        report["fps"] = round(current_fps, 1)
+                        report["cpu"] = round(cpu, 1)
+                        report["session_time"] = round(session_time, 1)
 
-                # ── Update shared state (one lock acquisition) ─────────────
+                # ── Update shared state (one lock acquisition) ─────────────────
                 with self._state_lock:
                     self._latest_jpeg = jpeg_bytes
-                    self._cached_state = {
-                        "fps": round(current_fps, 1),
-                        "cpu": round(cpu, 1),
-                        "ram_mb": round(ram_mb, 1),
-                        "active_objects": self._entity_registry.active_count_filtered(),
-                        "session_time": round(session_time, 1),
-                        "objects": report["objects"],                    # active only
-                        "inactive_objects": report["inactive_objects"],  # session history
-                        "events": report["events"],
-                        "relationships": report["relationships"],
-                        "scene_stability": round(scene_stability, 1),
-                        "report": report,
-                        "status": {
-                            "session_id": self._session_id,
-                            "yolo": "running",
-                            "tracker": "running",
-                            "database": "connected",
-                            "gemini": "ready" if (config.ENABLE_GEMINI and self._gemini and self._gemini.is_available) else "unavailable",
+                    if report:
+                        _active_count = report.get("active_objects", 0)
+                        self._cached_state = {
                             "fps": round(current_fps, 1),
                             "cpu": round(cpu, 1),
                             "ram_mb": round(ram_mb, 1),
-                        },
-                    }
+                            "active_objects": _active_count,  # reuse from report — no extra get_active()
+                            "session_time": round(session_time, 1),
+                            "objects": report["objects"],                    # active only
+                            "inactive_objects": report["inactive_objects"],  # session history
+                            "events": report["events"],
+                            "relationships": report["relationships"],
+                            "scene_stability": round(scene_stability, 1),
+                            "report": report,
+                            "status": {
+                                "session_id": self._session_id,
+                                "yolo": "running",
+                                "tracker": "running",
+                                "database": "connected",
+                                "gemini": "ready" if (config.ENABLE_GEMINI and self._gemini and self._gemini.is_available) else "unavailable",
+                                "fps": round(current_fps, 1),
+                                "cpu": round(cpu, 1),
+                                "ram_mb": round(ram_mb, 1),
+                            },
+                        }
+                    else:
+                        # First frame — no report yet, just update JPEG and fps
+                        self._cached_state["fps"] = round(current_fps, 1)
+                        self._cached_state["cpu"] = round(cpu, 1)
+                        self._latest_jpeg = jpeg_bytes
 
         except Exception as exc:
             log.error("Vision loop crashed: %s", exc, exc_info=True)

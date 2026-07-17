@@ -26,7 +26,7 @@ SMALL_OBJECT_INFERENCE_RESOLUTION: int = 960 # ROI verification resolution
 CONFIDENCE_THRESHOLD: float = 0.25       # Minimum detection confidence (lowered from 0.45)
 NMS_IOU_THRESHOLD: float = 0.45          # Non-max suppression IoU
 MAX_DETECTIONS: int = 100                # Cap per-frame detection count
-TRACKER_TYPE: str = "botsort.yaml"       # BoT-SORT (appearance + motion re-ID)
+TRACKER_TYPE: str = "bytetrack.yaml"     # ByteTrack (motion-only, ~35% faster than BoT-SORT)
 
 # Small Object Verification
 ENABLE_SMALL_OBJECT_VERIFICATION: bool = False
@@ -77,7 +77,7 @@ GEMINI_VERIFY_COOLDOWN: float = 3.0          # Minimum seconds between API calls
 GEMINI_SESSION_BUDGET: int = 60              # Hard cap on API calls per session
 GEMINI_MIN_OBJECT_AGE: float = 1.5          # Only verify objects seen for ≥N seconds
 DEEP_ANALYSIS_ENABLED: bool = True           # Request rich Gemini descriptions for all objects
-DEBUG_BYPASS_FPS_GATING: bool = True        # Ignore FPS limits for Gemini queueing
+DEBUG_BYPASS_FPS_GATING: bool = False       # Respect FPS limits for Gemini queueing
 
 # ──────────────────────────────────────────────────────────────────────────────
 # OCR & PRODUCT INTELLIGENCE

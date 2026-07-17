@@ -59,6 +59,7 @@ class GeminiVerifier:
         self._last_request_time: float = 0.0
         self._session_calls: int = 0          # Hard budget counter
         self._description_queued: set = set() # Track IDs queued for description (avoid re-queue)
+        self._verify_queued: set = set()      # Track IDs queued for label verification (O(1) dedup)
 
         self._start_worker()
 
@@ -135,9 +136,11 @@ class GeminiVerifier:
                 _, track_id, label, crop_img, object_age = item
                 # Skip if already resolved while waiting in queue
                 if track_id in self._cache:
+                    self._verify_queued.discard(track_id)  # Clean up
                     self._queue.task_done()
                     continue
                 self._process_verification(track_id, label, crop_img)
+                self._verify_queued.discard(track_id)  # Done — allow future re-queue if needed
             elif item_type == 'describe':
                 _, track_id, label, crop_img = item
                 self._process_description(track_id, label, crop_img)
@@ -319,17 +322,12 @@ class GeminiVerifier:
             return False
         if track_id in self._cache:
             return False  # Already verified (or attempted)
-
-        # Deduplicate: check if already queued
-        try:
-            for item in list(self._queue.queue):
-                if item is not _STOP_SENTINEL and len(item) > 1 and item[1] == track_id and item[0] == 'verify':
-                    return False
-        except Exception:
-            pass
+        if track_id in self._verify_queued:
+            return False  # Already in queue (O(1) set lookup, no queue scan)
 
         try:
             self._queue.put_nowait(('verify', track_id, label, crop_img, object_age))
+            self._verify_queued.add(track_id)
             log.debug("[Gemini] Enqueued track #%d ('%s') for verification.", track_id, label)
             return True
         except queue.Full:
@@ -355,14 +353,7 @@ class GeminiVerifier:
         if gemini_data and gemini_data.get("description"):
             return False  # Already has a description
 
-        # Deduplicate: check if already in queue
-        try:
-            for item in list(self._queue.queue):
-                if item is not _STOP_SENTINEL and len(item) > 1 and item[1] == track_id and item[0] == 'describe':
-                    return False
-        except Exception:
-            pass
-
+        # O(1) set check — no queue scan needed
         try:
             self._queue.put_nowait(('describe', track_id, label, crop_img))
             self._description_queued.add(track_id)

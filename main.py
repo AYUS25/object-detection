@@ -20,6 +20,7 @@ Controls:
   V         — Force Gemini verification of largest visible object
 """
 
+import collections
 import logging
 import sys
 import threading
@@ -55,17 +56,14 @@ log = logging.getLogger("main")
 # ──────────────────────────────────────────────────────────────────────────────
 
 class FPSTracker:
-    """Rolling-average FPS calculator using a circular time window."""
+    """Rolling-average FPS calculator using a circular time window (deque O(1))."""
 
     def __init__(self, window: int = 30):
-        self._times: List[float] = []
-        self._window = window
+        # deque with maxlen auto-evicts the oldest entry — no pop(0) O(N) shift
+        self._times: collections.deque = collections.deque(maxlen=window)
 
     def tick(self) -> float:
-        now = time.monotonic()
-        self._times.append(now)
-        if len(self._times) > self._window:
-            self._times.pop(0)
+        self._times.append(time.monotonic())
         if len(self._times) < 2:
             return 0.0
         elapsed = self._times[-1] - self._times[0]
@@ -79,7 +77,8 @@ class FPSTracker:
 class CameraThread:
     """
     Continuously grabs frames in a background thread.
-    Uses a threading.Lock to prevent torn-frame race conditions.
+    Uses a double-buffer approach: the camera thread writes to _write_frame;
+    read() atomically swaps the pointer — no full memcpy under the lock.
     """
 
     def __init__(self, src: int = config.CAMERA_INDEX):
@@ -104,12 +103,16 @@ class CameraThread:
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimise capture buffer lag
 
         self._lock = threading.Lock()
-        self._frame: Optional[np.ndarray] = None
+        # Double-buffer: camera thread writes _write_frame, read() swaps pointer
+        self._write_frame: Optional[np.ndarray] = None
+        self._read_frame: Optional[np.ndarray] = None
+        self._new_frame_available: bool = False
         self._ret: bool = False
         self._running: bool = True
 
         # Prime the first frame before starting the thread
-        self._ret, self._frame = self.cap.read()
+        self._ret, self._write_frame = self.cap.read()
+        self._read_frame = self._write_frame
 
         self._thread = threading.Thread(target=self._update, daemon=True, name="CameraGrab")
         self._thread.start()
@@ -120,14 +123,20 @@ class CameraThread:
             with self._lock:
                 self._ret = ret
                 if ret:
-                    self._frame = frame
+                    # Swap write buffer — main thread sees the new pointer on next read()
+                    self._write_frame = frame
+                    self._new_frame_available = True
 
     def read(self) -> tuple:
-        """Return (ret, frame_copy) thread-safely."""
+        """Return (ret, frame) — pointer swap under lock, no memcpy."""
         with self._lock:
-            if self._frame is None:
+            if self._write_frame is None:
                 return False, None
-            return self._ret, self._frame.copy()
+            if self._new_frame_available:
+                # Swap buffers: detach current read buffer, point to latest write
+                self._read_frame = self._write_frame
+                self._new_frame_available = False
+            return self._ret, self._read_frame
 
     def release(self) -> None:
         self._running = False
@@ -416,11 +425,11 @@ class SmartVisionAssistant:
                             self._total_objects_seen += 1
 
                 # Log removals to console AND database immediately
+                # Use direct dict lookup (O(1)) instead of linear list scan
+                removed_dict = self._scene_memory.get_recently_removed_dict()
                 for tid in removed_ids:
-                    removed = [r for r in self._scene_memory.get_recently_removed()
-                               if r.track_id == tid]
-                    if removed:
-                        rec = removed[0]
+                    rec = removed_dict.get(tid)
+                    if rec:
                         log.info(
                             "[Scene] ◀ Removed: #%d '%s' — was in scene for %s",
                             tid, rec.display_label, rec.duration_str(),
@@ -480,24 +489,26 @@ class SmartVisionAssistant:
                 # ── Periodic Scene Report ──────────────────────────────────────
                 self._reporter.tick(current_fps)
 
-                # ── Rendering (bounding boxes + HUD) ──────────────────────────
+                # ── Rendering (bounding boxes + HUD) ──────────────────────
+                # Draw on a copy only for display — inference already used the raw frame
+                display_frame = frame.copy() if True else frame  # safe to draw on
                 if self._show_overlays:
                     self._detector.draw_detections(
-                        frame, detections,
+                        display_frame, detections,
                         scene_memory=self._scene_memory,
                         verification_cache=self._verification_cache,
                     )
 
                 draw_hud(
-                    frame, current_fps,
+                    display_frame, current_fps,
                     det_count=len(detections),
                     overlays_on=self._show_overlays,
                     gemini_budget=self._gemini.budget_remaining,
                     h=h, w=w,
                 )
 
-                # ── Display ────────────────────────────────────────────────────
-                cv2.imshow("Smart Vision Assistant", frame)
+                # ── Display ────────────────────────────────────────────────
+                cv2.imshow("Smart Vision Assistant", display_frame)
 
                 # ── Key Handling ───────────────────────────────────────────────
                 key = cv2.waitKey(1)

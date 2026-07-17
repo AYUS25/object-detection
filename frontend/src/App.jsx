@@ -17,6 +17,7 @@ import SystemStatus from './components/SystemStatus'
 import MemorySearch from './components/MemorySearch'
 import TimelineView from './components/TimelineView'
 import Diagnostics from './components/Diagnostics'
+import ObjectWatchlist from './components/ObjectWatchlist'
 
 export default function App() {
   const { data, connected } = useWebSocket()
@@ -26,6 +27,8 @@ export default function App() {
   const report          = useMemo(() => data?.report ?? {}, [data?.report])
   const activeObjects   = useMemo(() => data?.objects ?? [], [data?.objects])
   const inactiveObjects = useMemo(() => data?.inactive_objects ?? [], [data?.inactive_objects])
+  // Watchlist state — forwarded directly from WebSocket push (no extra fetch)
+  const wsWatchlist     = data?.watchlist ?? undefined
 
   const headerStatus = useMemo(() => ({
     ...status,
@@ -66,6 +69,8 @@ export default function App() {
         {activeTab === 'Dashboard' && (
           <div className="overflow-y-auto">
             <CameraView connected={connected} />
+            {/* MONITORING — feature panels below the camera feed */}
+            <ObjectWatchlist wsWatchlist={wsWatchlist} />
             <SceneReport
               report={{ ...report, objects: activeObjects, inactive_objects: inactiveObjects }}
             />
